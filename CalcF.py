@@ -1,0 +1,669 @@
+import numpy as np
+from scipy import linalg
+import math
+
+def CalcF(RefImage, ScanImage, g, Fo, Ind, Settings, curMaterial, RefInd, PC):
+    ## handle inputs
+    Material = ReadMaterial(curMaterial)
+    # g0 = g
+    RefImage=np.float64(RefImage)
+    ScanImage=np.float64(ScanImage)
+
+    roixc = Settings.roixc
+    roiyc = Settings.roiyc
+    xstar=PC[0]
+    ystar=PC[1]
+    zstar=PC[2]
+    standev = Settings.StandardDeviation
+
+    ## set up filter for ROI filtering
+    if ~any(Settings.ROIFilter):
+        custfilt = []
+        windowfunc = custfilt
+    else:
+        lowerrad = Settings.ROIFilter[0]
+        upperrad = Settings.ROIFilter[1]
+        L = Settings.ROISize + 1
+        xc = round(L/2)
+        yc = round(L/2)
+        
+        custfilt = np.zeros((L-1,L-1))
+        
+        i = np.arange(Settings.ROISize)
+        j = np.arange(Settings.ROISize)
+        IJ = np.meshgrid(i,j)
+        dist = np.sqrt((IJ-np.ones(IJ.shape)*xc)**2 + (IJ.T.conj()-np.ones(IJ.shape)*yc)**2)
+        custfilt[dist<lowerrad | dist>upperrad] = 1
+        if Settings.ROIFilter[3] == 1:
+            custfilt[dist>upperrad & dist<upperrad+13] = math.erf((dist(dist>upperrad & dist<upperrad+13)-upperrad)/13*np.pi)
+        if Settings.ROIFilter[2] == 1:
+            custfilt[dist<lowerrad & dist>lowerrad-13] = math.erf(-(dist(dist<lowerrad & dist>lowerrad-13)-lowerrad)/13*np.pi)
+        custfilt = 1-custfilt
+        custfilt = np.fft.fftshift((custfilt))
+        
+        xc=L/2
+        yc=L/2
+        windowfunc = np.cos((IJ-np.ones(IJ.shape)*xc)*np.pi/Settings.ROISize)*np.cos((IJ.T.conj()-np.ones(IJ.shape)*yc)*np.pi/Settings.ROISize)
+
+    ## geometry / coordinate frame transformation
+    alpha=np.pi/2-Settings.SampleTilt+Settings.CameraElevation
+    # Sample to Crystal
+    Qsc=g
+    [~,U] = linalg.polar(Qsc)
+    if sum(sum(U-np.eye(3))) > 1e-6:
+        raise ValueError('g must be a pure rotation')
+
+    Qcs=Qsc.T.conj()
+    if sum(sum(Qsc*Qcs-np.eye(3))) > 1e-6 #Changed by BEJ June 2016 to account for single precision orientations
+        raise ValueError('the orientation matrix has issues')
+
+    Qvp=[-1, 0, 0, 0, -1, 0, 0, 0, 1]
+
+    Dvp=[(xstar)*Settings.PixelSize(1-ystar)*Settings.PixelSize0]
+
+    # Phospher to sample
+    Qps = frameTransforms.phosphorToSample(Settings)
+    Qsp=Qps'
+    # Translation between frames
+    Dps=Qps*[00-zstar*Settings.PixelSize]#in pixels in sample frame
+    # Dsp=[00zstar*Settings.PixelSize]
+
+    ## Preallocate for loop
+    qs1 = np.zeros(len(roixc))
+    qs2 = np.zeros(len(roixc))
+    qs3 = np.zeros(len(roixc))
+    qc1 = np.zeros(len(roixc))
+    qc2 = np.zeros(len(roixc))
+    qc3 = np.zeros(len(roixc))
+    rs1 = np.zeros(len(roixc))
+    rs2 = np.zeros(len(roixc))
+    rs3 = np.zeros(len(roixc))
+    rsp1 = np.zeros(len(roixc))
+    rsp2 = np.zeros(len(roixc))
+    rsp3 = np.zeros(len(roixc))
+    rc1 = np.zeros(len(roixc))
+    rc2 = np.zeros(len(roixc))
+    rc3 = np.zeros(len(roixc))
+    rcp1 = np.zeros(len(roixc))
+    rcp2 = np.zeros(len(roixc))
+    rcp3 = np.zeros(len(roixc))
+    l = np.zeros(len(roixc))
+    lp = np.zeros(len(roixc))
+    Rshift = np.zeros(len(roixc))
+    Cshift = np.zeros(len(roixc))
+    dRshift = np.zeros(len(roixc))
+    dCshift = np.zeros(len(roixc))
+    XX = np.zeros((len(roixc),3))
+
+    ## Short circuit if cross-correlating against same pattern
+    if Ind == RefInd
+        F = eye(3)
+        fitMetrics = computations.metrics.fitMetrics('good')
+        sigma = zeros(3, 3)
+        if Settings.DoShowPlot
+            pc = [xstar ystar, zstar]
+            UI_utils.plotShifts(RefImage, ScanImage, Ind, RefInd, Settings,...
+                Qsc, pc, 1:length(roixc), Cshift, Rshift, F, fitMetrics)
+            
+        end
+
+        return
+    end
+
+
+
+    ## Go over each ROI
+    for i=1:length(roixc)
+        rc=roiyc(i)
+        cc=roixc(i)
+        #This is a vector describing a position on the screen in
+        #the screen frame before initial deformation
+        Xp = Qvp*[ccrc0]+Dvp
+        #Direction described in sample frame before initial deformation
+        Xs = Qps*Xp+Dps
+        Xsh = Xs
+        Xc = Qsc*Xs
+        Xch = Xc
+        lambdah = norm(Xc)
+        #     Xc=Fo*Xc #Deformed roi center direction in initial crystal frame
+        #     Xs=Qsc'*Xc
+        n = Qps*[0,0,-1]'
+        #shift from sample origin to phospher origin described in sample frame
+        c = Qps*[00-zstar]*Settings.PixelSize
+        
+        rrange=round(rc-Settings.ROISize/2):round(rc-Settings.ROISize/2)+Settings.ROISize-1
+        crange=round(cc-Settings.ROISize/2):round(cc-Settings.ROISize/2)+Settings.ROISize-1
+        #
+        #     if method == 1# method = 0 was just for testing and as not used here.
+        
+        if size(RefImage)~=size(ScanImage)
+            RefImage=ScanImage
+            disp('No Ref Image')
+        end
+        
+        RefROI = RefImage(rrange,crange)
+        ScanROI = ScanImage(rrange,crange)
+        
+        RefROI = RefROI - mean(RefROI(:))
+        ScanROI = ScanROI - mean(ScanROI(:))
+        
+        #Perform Cross-Correlation
+        [rimage, dxshift, dyshift] = custfftxc((RefImage(rrange,crange)),...
+            (ScanImage(rrange,crange)),rc,cc,custfilt,windowfunc)#this is the screen shift in the F(i-1) frame
+        
+        
+        if nargout >= 3
+            #Calculate Cross-Correlation Coefficient
+            XX(i,1) = CalcCrossCorrelationCoef(RefROI,ScanROI)
+            
+            
+            #Calculate Confidence of Shift
+            XX(i,2) = (max(rimage(:))-mean(rimage(:)))/std(rimage(:))
+            
+            #Calculate Mutual Information (Requires Image Processing Toolbox)
+            if isfield(Settings,'CalcMI') && Settings.CalcMI
+                XX(i,3) = CalcMutualInformation(RefROI,ScanROI)
+            else
+                XX(i,3) = 0
+            end
+        end
+        if RefInd~=0 # new if statement for when there is a single ref image DTF 7/16/14 this is to adjust PC in Wilkinson method for that single ref case ***need to do it for all wilkinson cases***
+            tx=(xstar-Settings.XStar(RefInd))*Settings.PixelSize # vector on phosphor between PC of ref and PC of measured uses notation from PCsensitivity paper
+            ty=(ystar-Settings.YStar(RefInd))*Settings.PixelSize
+    #          tantheta=atan2(sqrt((cc-Settings.YStar(Settings.RefImageInd))^2+(rc-Settings.XStar(Settings.RefImageInd))^2),Settings.ZStar(Settings.RefImageInd))
+            spminussx=(zstar-Settings.ZStar(RefInd))*(rc-Settings.XStar(RefInd)*Settings.PixelSize)/Settings.ZStar(RefInd) # difference of vectors from PC to ROI center for ref and scan pattern
+            spminussy=(zstar-Settings.ZStar(RefInd))*(cc-Settings.YStar(RefInd)*Settings.PixelSize)/Settings.ZStar(RefInd)
+            dxshift=dxshift-tx-spminussx # corrected ROI shift taking into account PC shift
+            dyshift=dyshift+ty+spminussy #****NOT SURE ABOUT SIGN ON THIS        
+            
+        end
+
+    #     [xshift0,yshift0] = Theoretical_Pixel_Shift(Qsc,xstar,ystar,zstar,cc,rc,Fo,Settings.PixelSize,alpha)#this is the screen shift in the g (hough) frame *****not used***
+        
+        #     else
+        #         [ro uo]=poldec(Fo)
+        #         [dxshift,dyshift] = Theoretical_Pixel_Shift(ro'*Qsc,xstar,ystar,zstar,cc,rc,F,Settings.PixelSize,alpha)#this is the screen shift in the F(i-1) frame
+        #         [xshift0,yshift0] = Theoretical_Pixel_Shift(Qsc,xstar,ystar,zstar,cc,rc,Fo,Settings.PixelSize,alpha) #this is the screen shift in the g (hough) frame
+        #     end
+        
+        # inaddition to r we want to record the deformed r
+        Xp=Qvp*[cc+dxshift (rc+dyshift)0]+Dvp
+        #Direction described in sample frame
+        Xsp=Qps*Xp+Dps
+        Xcp=Qsc*Xsp
+        Xcp=Fo*Xcp
+        Xsp=Qsc'*Xcp
+        nXsp=Xsp/norm(Xsp)
+    #     nXcp=Qsc'*nXsp # old erroneous code - messed up Colin Crystal
+        nXcp=Xcp/norm(Xcp) #new code  gives correct F for deformed simulated pattern to ~0.0005 dtf 8/25/14
+        #find intersection of Xsp and phosphor
+        lambdap=(n'*c)./(n'*nXsp)
+        
+        
+        qs=lambdap*nXsp-Xsh
+        qs=qs/lambdah
+        qc=Qsc*qs
+        qp=Qsp*qs
+        qv=Qvp*qp
+        
+        xshift=qv(1)*lambdah
+        yshift=qv(2)*lambdah
+        
+        
+        qs1(i)=qs(1)
+        qs2(i)=qs(2)
+        qs3(i)=qs(3)
+        qc1(i)=qc(1)
+        qc2(i)=qc(2)
+        qc3(i)=qc(3)
+        rs1(i)=Xsh(1)/lambdah
+        rs2(i)=Xsh(2)/lambdah
+        rs3(i)=Xsh(3)/lambdah
+        rsp1(i)=nXsp(1)
+        rsp2(i)=nXsp(2)
+        rsp3(i)=nXsp(3)
+        rc1(i)=Xch(1)/lambdah
+        rc2(i)=Xch(2)/lambdah
+        rc3(i)=Xch(3)/lambdah
+        rcp1(i)=nXcp(1)
+        rcp2(i)=nXcp(2)
+        rcp3(i)=nXcp(3)
+        l(i)=lambdah
+        lp(i)=lambdap
+        Rshift(i)=yshift
+        Cshift(i)=xshift
+        dRshift(i)=dyshift
+        dCshift(i)=dxshift
+        
+        
+    end
+    #remove bad regions
+    stdevR=std(dRshift)
+    mR=mean(dRshift)
+    stdevC=std(dCshift)
+    mC=mean(dCshift)
+    if stdevR~=0 && stdevC~=0
+        tempind = ...
+            abs(dRshift) < 129 & ...
+            abs(dCshift) < 129 & ...
+            abs(dRshift-mR) < standev * stdevR & ...
+            abs(dCshift-mC) < standev * stdevC
+        rs1=(rs1(tempind))
+        rs2=(rs2(tempind))
+        rs3=(rs3(tempind))
+        rsp1=(rsp1(tempind))
+        rsp2=(rsp2(tempind))
+        rsp3=(rsp3(tempind))
+        qs1=(qs1(tempind))
+        qs2=(qs2(tempind))
+        qs3=(qs3(tempind))
+        rc1=(rc1(tempind))
+        rc2=(rc2(tempind))
+        rc3=(rc3(tempind))
+        rcp1=(rcp1(tempind))
+        rcp2=(rcp2(tempind))
+        rcp3=(rcp3(tempind))
+        qc1=(qc1(tempind))
+        qc2=(qc2(tempind))
+        qc3=(qc3(tempind))
+        
+        if length(tempind)<4
+            F=eye(3)
+            fitMetrics = computations.metrics.fitMetrics
+            disp('Too few good ROI''s')
+            return
+        end
+    else
+        tempind = true(size(rc3))
+    end
+    length(tempind)
+    g=Qsc
+    #Create stiffness matrix
+    if strcmp(Material.lattice,'cubic') || strcmp(Material.lattice,'tetragonal')
+        C1111=Material.C11*1e9
+        C2323=Material.C44*1e9
+        C1122=Material.C12*1e9
+        delta=eye(3)
+        #Transform to the crystal apply stress normal to surface is zero
+        Cc=zeros(3,3,3,3)
+        Cs=zeros(3,3,3,3)
+        
+        g=g'
+        for i=1:3
+            for j=1:3
+                for k=1:3
+                    for ls=1:3
+                        Cc(i,j,k,ls)=C1122*delta(i,j)*delta(k,ls)+C2323*(delta(i,k)*delta(j,ls)+delta(i,ls)*delta(j,k))...
+                            +(C1111-C1122-2*C2323)*(delta(1,i)*delta(1,j)*delta(1,k)*delta(1,ls)+delta(2,i)*delta(2,j)*delta(2,k)*delta(2,ls)+delta(3,i)*delta(3,j)*delta(3,k)*delta(3,ls))
+                        Cs(i,j,k,ls)=C1122*delta(i,j)*delta(k,ls)+C2323*(delta(i,k)*delta(j,ls)+delta(i,ls)*delta(j,k))...
+                            +(C1111-C1122-2*C2323)*(g(i,1)*g(j,1)*g(k,1)*g(ls,1)+g(i,2)*g(j,2)*g(k,2)*g(ls,2)+g(i,3)*g(j,3)*g(k,3)*g(ls,3))
+                        
+                    end
+                end
+            end
+        end
+    else
+        C1111=Material.C11*1e9
+        C3333=Material.C33*1e9
+        C1212=Material.C66*1e9
+        C2323=Material.C44*1e9
+        C1122=Material.C12*1e9
+        C1133=Material.C13*1e9
+        delta=eye(3)
+        #Transform to the crystal apply stress normal to surface is zero
+        Cc=zeros(3,3,3,3)
+        Cs=zeros(3,3,3,3)
+        
+        g=g' # switch from sample to crystal, to crystal to sample
+        
+        #for hexagonal lattice in crystal frame, I couldn't think of a more clever
+        #way of doing this, but I'm sure that there is one. Not sure if the
+        #sample frame is correct
+        for i=1:3
+            for j=1:3
+                for k=1:3
+                    for ls=1:3
+                        Cc(i,j,k,ls)=C1133*delta(i,j)*delta(k,ls)+C2323*(delta(i,k)*delta(j,ls)+delta(i,ls)*delta(j,k))...
+                            +(C1111-C1133-2*C2323)*(delta(1,i)*delta(1,j)*delta(1,k)*delta(1,ls)+delta(2,i)*delta(2,j)*delta(2,k)*delta(2,ls)+delta(3,i)*delta(3,j)*delta(3,k)*delta(3,ls))
+                    end
+                end
+            end
+        end
+        Cc(1,2,1,2) = C1212
+        Cc(2,1,1,2) = C1212
+        Cc(1,2,2,1) = C1212
+        Cc(2,1,2,1) = C1212
+        Cc(1,1,2,2) = C1122
+        Cc(2,2,1,1) = C1122
+        Cc(3,3,3,3) = C3333
+        for i = 1:3
+            for j = 1:3
+                for k = 1:3
+                    for ls = 1:3
+                        for m = 1:3
+                            for n = 1:3
+                                for o = 1:3
+                                    for p = 1:3
+                                        Cs(i,j,k,ls) = Cs(i,j,k,ls) + g(i,m)*g(j,n)*g(k,o)*g(ls,p)*Cc(m,n,o,p)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        Cc(1,1,2,2) = C1122
+        Cc(2,2,1,1) = C1122
+        Cc(3,3,3,3) = C3333
+        Cc(1,2,1,2) = C1212
+        Cc(1,2,2,1) = C1212
+        Cc(2,1,2,1) = C1212
+        Cc(2,1,1,2) = C1212
+    end
+    g=g' # switch back to sample to crystal transformation
+    Z= zeros(length(tempind),1)
+    sigma = zeros(3,3)
+
+
+    switch Settings.FCalcMethod
+        
+        
+        case 'Real Sample'
+            ## Method 1: Straight up real (sample frame)
+            r1=rs1'
+            r2=rs2'
+            r3=rs3'
+            q1=qs1'
+            q2=qs2'
+            q3=qs3'
+            #coefficients
+            #
+            # Wilkinson's equations
+            # variables:        a11-a33           a12                 a13             a21             a22-a33             a23             a31                 a32
+            A1=[          r1.*r3          r2.*r3              r3.*r3              Z               Z               Z          -r1.*r1          -r1.*r2       ]
+            # # variables:        a11-a33           a12                 a13             a21             a22-a33             a23             a31                 a32
+            A2=[            Z               Z                       Z           r1.*r3            r2.*r3            r3.*r3          -r1.*r2             -r2.*r2 ]
+            #
+            #answers
+            b1 = r3.*q1-r1.*q3
+            b2 = r3.*q2-r2.*q3
+            b3 = [b1b2]
+            A3 = [A1A2]
+            #solve for variables
+            X3=A3\b3
+            #variables
+            U12=X3(2)
+            U13=X3(3)
+            U21=X3(4)
+            U23=X3(6)
+            U31=X3(7)
+            U32=X3(8)
+            #note that e12=e21,  (e12+e21)=2*e12  e12=1/2(U12+U21) for small
+            #deformations
+            #    e11          e22   e33
+            C=Cs
+            # boundary condition equations
+            # A4=[C(1,3,1,1) C(1,3,2,2) C(1,3,3,3)]
+            # A5=[C(2,3,1,1) C(2,3,2,2) C(2,3,3,3)]
+            A6=[C(3,3,1,1) C(3,3,2,2) C(3,3,3,3)]
+            A7=[1 0 -1]
+            A8=[0 1 -1]
+            # b4=-C(1,3,1,2)*(U12+U21)-C(1,3,1,3)*(U31+U13)-C(1,3,2,3)*(U23+U32)
+            # b5=-C(2,3,1,2)*(U12+U21)-C(2,3,1,3)*(U13+U31)-C(2,3,3,2)*(U23+U32)
+            b6=-C(3,3,1,2)*(U12+U21)-C(3,3,1,3)*(U13+U31)-C(3,3,3,2)*(U23+U32)
+            b7=X3(1)
+            b8=X3(5)
+            # this is using all three boundary condition equations
+            # X4=[A4A5A6A7A8]\[b4b5b6b7b8]
+            # this is using only the sigma_33=0 boundary condition
+            X4=[A6A7A8]\[b6b7b8]
+            U11=X4(1)
+            U22=X4(2)
+            U33=X4(3)
+            #This U is the one that deforms vectors in the sample frame
+            U= [U11 U12 U13...
+                U21 U22 U23...
+                U31 U32 U33]
+            F=U+eye(3)
+            F=g*F*g' #Put in crystal frame
+            #calculate the sum of the squared errors
+            [cx,cy]=Theoretical_Pixel_Shift(Qsc,xstar,ystar,zstar,roixc,roiyc,F,Settings.PixelSize,alpha)
+            fitMetrics = computations.metrics.fitMetrics(cx, cy, Cshift, Rshift, tempind)
+            
+        case 'Real Crystal'
+            ## Method 2: wilkinson in crystal frame
+            
+            r1=rc1'
+            r2=rc2'
+            r3=rc3'
+            q1=qc1'
+            q2=qc2'
+            q3=qc3'
+            #coefficients
+            #
+            # variables:        a11-a33           a12                 a13             a21             a22-a33             a23             a31                 a32
+            A1=[          r1.*r3          r2.*r3              r3.*r3              Z               Z               Z          -r1.*r1          -r1.*r2       ]
+            # # variables:        a11-a33           a12                 a13             a21             a22-a33             a23             a31                 a32
+            A2=[            Z               Z                       Z           r1.*r3            r2.*r3            r3.*r3          -r1.*r2             -r2.*r2 ]
+            #
+            #answers
+            b1=r3.*q1-r1.*q3
+            b2=r3.*q2-r2.*q3
+            b3 = [b1b2]
+            A3 = [A1A2]
+            
+            #solve for variables
+            X3=A3\b3
+            #variables
+            U12=X3(2)
+            U13=X3(3)
+            U21=X3(4)
+            U23=X3(6)
+            U31=X3(7)
+            U32=X3(8)
+            #note that e12=e21,  (e12+e21)=2*e12  e12=1/2(U12+U21) for small
+            #deformations
+            #    e11          e22   e33
+            C=Cc
+            
+            # boundary condition equations
+            nr = g*[001]
+            #         A4 = [C(1,1,1,1)*nr(1)+C(1,2,1,1)*nr(2)+C(1,3,1,1)*nr(3) C(1,1,2,2)*nr(1)+C(1,2,2,2)*nr(2)+C(1,3,2,2)*nr(3) C(1,1,3,3)*nr(1)+C(1,2,3,3)*nr(2)+C(1,3,3,3)*nr(3)]
+            #         A5 = [C(2,1,1,1)*nr(1)+C(2,2,1,1)*nr(2)+C(2,3,1,1)*nr(3) C(2,1,2,2)*nr(1)+C(2,2,2,2)*nr(2)+C(2,3,2,2)*nr(3) C(2,1,3,3)*nr(1)+C(2,2,3,3)*nr(2)+C(2,3,3,3)*nr(3)]
+            A6 = [C(3,1,1,1)*nr(1)+C(3,2,1,1)*nr(2)+C(3,3,1,1)*nr(3) C(3,1,2,2)*nr(1)+C(3,2,2,2)*nr(2)+C(3,3,2,2)*nr(3) C(3,1,3,3)*nr(1)+C(3,2,3,3)*nr(2)+C(3,3,3,3)*nr(3)]
+            
+            #         b4 = -(C(1,1,1,2)*nr(1)+C(1,2,1,2)*nr(2)+C(1,3,1,2)*nr(3))*(U21+U12)-(C(1,1,1,3)*nr(1)+C(1,2,1,3)*nr(2)+C(1,3,1,3)*nr(3))*(U31+U13)-(C(1,1,3,2)*nr(1)+C(1,2,3,2)*nr(2)+C(1,3,3,2)*nr(3))*(U23+U32)
+            #         b5 = -(C(2,1,1,2)*nr(1)+C(2,2,1,2)*nr(2)+C(2,3,1,2)*nr(3))*(U21+U12)-(C(2,1,1,3)*nr(1)+C(2,2,1,3)*nr(2)+C(2,3,1,3)*nr(3))*(U31+U13)-(C(2,1,3,2)*nr(1)+C(2,2,3,2)*nr(2)+C(2,3,3,2)*nr(3))*(U23+U32)
+            b6 = -(C(3,1,1,2)*nr(1)+C(3,2,1,2)*nr(2)+C(3,3,1,2)*nr(3))*(U21+U12)-(C(3,1,1,3)*nr(1)+C(3,2,1,3)*nr(2)+C(3,3,1,3)*nr(3))*(U31+U13)-(C(3,1,3,2)*nr(1)+C(3,2,3,2)*nr(2)+C(3,3,3,2)*nr(3))*(U23+U32)
+            
+            A7 = [1 0 -1]
+            A8 = [0 1 -1]
+            b7 = X3(1)
+            b8 = X3(5)
+            # this is applying all 3 boundary condition equations
+            # X4=[A4A5A6A7A8]\[b4b5b6b7b8]
+            # this is applying only the sigma_33=0 boundary condition
+            X4=[A6A7A8]\[b6b7b8]
+            U11=X4(1)
+            U22=X4(2)
+            U33=X4(3)
+            #This U is the one that deforms vectors in the crystal frame
+            U= [U11 U12 U13...
+                U21 U22 U23...
+                U31 U32 U33]
+            F=U+eye(3)
+            #calculate the sum of the squared errors
+            [cx,cy]=Theoretical_Pixel_Shift(Qsc,xstar,ystar,zstar,roixc,roiyc,F,Settings.PixelSize,alpha)
+            fitMetrics = computations.metrics.fitMetrics(cx, cy, Cshift, Rshift, tempind)
+            
+        case 'Collin Sample'
+            ## method 5: Colin's method in sample frame
+            r1=rs1'
+            r2=rs2'
+            r3=rs3'
+            rp1=rsp1'
+            rp2=rsp2'
+            rp3=rsp3'
+            
+            q1=qs1'
+            q2=qs2'
+            q3=qs3'
+            
+            #?
+            #         n=g'*((g*[001])'*inv(Fo)/norm((g*[001])'*inv(Fo)))'
+            n = [0 0 1]
+            C=Cs
+            
+            # equations for boundary conditions
+            # vars:                          a11                                        a12                                                     a13                                      a21                                 a22                                                           a23                                     a31                                                                a32                                 a33
+            A5=[ C(1,1,1,1)*n(1)+C(1,2,1,1)*n(2)+C(1,3,1,1)*n(3) C(1,1,1,2)*n(1)+C(1,2,1,2)*n(2)+C(1,3,1,2)*n(3)    C(1,1,1,3)*n(1)+C(1,2,1,3)*n(2)+C(1,3,1,3)*n(3) C(1,1,1,2)*n(1)+C(1,2,1,2)*n(2)+C(1,3,1,2)*n(3) C(1,1,2,2)*n(1)+C(1,2,2,2)*n(2)+C(1,3,2,2)*n(3)  C(1,1,2,3)*n(1)+C(1,2,2,3)*n(2)+C(1,3,2,3)*n(3)  C(1,1,1,3)*n(1)+C(1,2,1,3)*n(2)+C(1,3,1,3)*n(3)      C(1,1,2,3)*n(1)+C(1,2,2,3)*n(2)+C(1,3,2,3)*n(3) C(1,1,3,3)*n(1)+C(1,2,3,3)*n(2)+C(1,3,3,3)*n(3)]/1e11
+            A6=[ C(2,1,1,1)*n(1)+C(2,2,1,1)*n(2)+C(2,3,1,1)*n(3) C(2,1,1,2)*n(1)+C(2,2,1,2)*n(2)+C(2,3,1,2)*n(3)    C(2,1,1,3)*n(1)+C(2,2,1,3)*n(2)+C(2,3,1,3)*n(3) C(2,1,1,2)*n(1)+C(2,2,1,2)*n(2)+C(2,3,1,2)*n(3) C(2,1,2,2)*n(1)+C(2,2,2,2)*n(2)+C(2,3,2,2)*n(3)  C(2,1,2,3)*n(1)+C(2,2,2,3)*n(2)+C(2,3,2,3)*n(3)  C(2,1,1,3)*n(1)+C(2,2,1,3)*n(2)+C(2,3,1,3)*n(3)      C(2,1,2,3)*n(1)+C(2,2,2,3)*n(2)+C(2,3,2,3)*n(3) C(2,1,3,3)*n(1)+C(2,2,3,3)*n(2)+C(2,3,3,3)*n(3)]/1e11
+            A7=[ C(3,1,1,1)*n(1)+C(3,2,1,1)*n(2)+C(3,3,1,1)*n(3) C(3,1,1,2)*n(1)+C(3,2,1,2)*n(2)+C(3,3,1,2)*n(3)    C(3,1,1,3)*n(1)+C(3,2,1,3)*n(2)+C(3,3,1,3)*n(3) C(3,1,1,2)*n(1)+C(3,2,1,2)*n(2)+C(3,3,1,2)*n(3) C(3,1,2,2)*n(1)+C(3,2,2,2)*n(2)+C(3,3,2,2)*n(3)  C(3,1,2,3)*n(1)+C(3,2,2,3)*n(2)+C(3,3,2,3)*n(3)  C(3,1,1,3)*n(1)+C(3,2,1,3)*n(2)+C(3,3,1,3)*n(3)      C(3,1,2,3)*n(1)+C(3,2,2,3)*n(2)+C(3,3,2,3)*n(3) C(3,1,3,3)*n(1)+C(3,2,3,3)*n(2)+C(3,3,3,3)*n(3)]/1e11
+            
+            # Colin's equations
+            # variables:        a11             a12                 a13             a21             a22             a23             a31                 a32                 a33
+            A1=[        r1.*rp1.*rp1-r1   r2.*rp1.*rp1-r2   r3.*rp1.*rp1-r3     r1.*rp2.*rp1    r2.*rp2.*rp1     r3.*rp2.*rp1     r1.*rp3.*rp1      r2.*rp3.*rp1        r3.*rp3.*rp1 ]
+            # variables:        a11             a12                 a13             a21             a22             a23             a31                  a32                 a33
+            A2=[        r1.*rp1.*rp2      r2.*rp1.*rp2      r3.*rp1.*rp2        r1.*rp2.*rp2-r1 r2.*rp2.*rp2-r2  r3.*rp2.*rp2-r3  r1.*rp3.*rp2      r2.*rp3.*rp2        r3.*rp3.*rp2 ]
+            # variables:        a11             a12                 a13             a21             a22             a23             a31                  a32                 a33
+            A3=[        r1.*rp1.*rp3      r2.*rp1.*rp3      r3.*rp1.*rp3        r1.*rp2.*rp3    r2.*rp2.*rp3     r3.*rp2.*rp3     r1.*rp3.*rp3-r1   r2.*rp3.*rp3-r2     r3.*rp3.*rp3-r3 ]
+            
+            
+            #answers
+            b1=-q1-(q1.*rp1+q2.*rp2+q3.*rp3).*rp1
+            b2=-q2-(q1.*rp1+q2.*rp2+q3.*rp3).*rp2
+            b3=-q3-(q1.*rp1+q2.*rp2+q3.*rp3).*rp3
+            b5=0
+            b6=0
+            b7=0
+            b4 = [b1b2b3b5b6b7]
+            A4 = [A1A2A3A5A6A7]
+            #          b4 = [b1b2b3]
+            #          A4 = [A1A2A3]
+            
+            # Using only the final traction free condition: ************
+            # doesn't make significant difference  that I could see DTF 8/25/14
+            # but see 8/26/ results - show that full BC is maybe 10# better
+    #         b4 = [b1b2b3b7]
+    #         A4 = [A1A2A3A7]
+    #         
+            #solve for variables
+            X3=A4\b4
+            #variables
+            U11=X3(1)
+            U12=X3(2)
+            U13=X3(3)
+            U21=X3(4)
+            U22=X3(5)
+            U23=X3(6)
+            U31=X3(7)
+            U32=X3(8)
+            U33=X3(9)
+            #This U is in the sample frame
+            U= [U11 U12 U13...
+                U21 U22 U23...
+                U31 U32 U33]
+            A=U+eye(3)
+            F=g*A*g'
+            
+            [cx,cy]=Theoretical_Pixel_Shift(Qsc,xstar,ystar,zstar,roixc,roiyc,F,Settings.PixelSize,alpha)
+            fitMetrics = computations.metrics.fitMetrics(cx, cy, Cshift, Rshift, tempind)
+            
+        case 'Collin Crystal'
+            ## method 6: Colin's method in crystal frame
+            
+            r1=rc1'
+            r2=rc2'
+            r3=rc3'
+            rp1=rcp1'
+            rp2=rcp2'
+            rp3=rcp3'
+            
+            q1=qc1'
+            q2=qc2'
+            q3=qc3'
+            
+            # n=(g*[001])'*inv(Fo)/norm((g*[001])'*inv(Fo))
+            n = g*[001]
+            C=Cc
+            
+            # equations for boundary conditions
+            # vars:                          a11                                        a12                                                     a13                                      a21                                 a22                                                           a23                                     a31                                                                a32                                 a33
+            A5=[ C(1,1,1,1)*n(1)+C(1,2,1,1)*n(2)+C(1,3,1,1)*n(3) C(1,1,1,2)*n(1)+C(1,2,1,2)*n(2)+C(1,3,1,2)*n(3)    C(1,1,1,3)*n(1)+C(1,2,1,3)*n(2)+C(1,3,1,3)*n(3) C(1,1,1,2)*n(1)+C(1,2,1,2)*n(2)+C(1,3,1,2)*n(3) C(1,1,2,2)*n(1)+C(1,2,2,2)*n(2)+C(1,3,2,2)*n(3)  C(1,1,2,3)*n(1)+C(1,2,2,3)*n(2)+C(1,3,2,3)*n(3)  C(1,1,1,3)*n(1)+C(1,2,1,3)*n(2)+C(1,3,1,3)*n(3)      C(1,1,2,3)*n(1)+C(1,2,2,3)*n(2)+C(1,3,2,3)*n(3) C(1,1,3,3)*n(1)+C(1,2,3,3)*n(2)+C(1,3,3,3)*n(3)]/1e11
+            A6=[ C(2,1,1,1)*n(1)+C(2,2,1,1)*n(2)+C(2,3,1,1)*n(3) C(2,1,1,2)*n(1)+C(2,2,1,2)*n(2)+C(2,3,1,2)*n(3)    C(2,1,1,3)*n(1)+C(2,2,1,3)*n(2)+C(2,3,1,3)*n(3) C(2,1,1,2)*n(1)+C(2,2,1,2)*n(2)+C(2,3,1,2)*n(3) C(2,1,2,2)*n(1)+C(2,2,2,2)*n(2)+C(2,3,2,2)*n(3)  C(2,1,2,3)*n(1)+C(2,2,2,3)*n(2)+C(2,3,2,3)*n(3)  C(2,1,1,3)*n(1)+C(2,2,1,3)*n(2)+C(2,3,1,3)*n(3)      C(2,1,2,3)*n(1)+C(2,2,2,3)*n(2)+C(2,3,2,3)*n(3) C(2,1,3,3)*n(1)+C(2,2,3,3)*n(2)+C(2,3,3,3)*n(3)]/1e11
+            A7=[ C(3,1,1,1)*n(1)+C(3,2,1,1)*n(2)+C(3,3,1,1)*n(3) C(3,1,1,2)*n(1)+C(3,2,1,2)*n(2)+C(3,3,1,2)*n(3)    C(3,1,1,3)*n(1)+C(3,2,1,3)*n(2)+C(3,3,1,3)*n(3) C(3,1,1,2)*n(1)+C(3,2,1,2)*n(2)+C(3,3,1,2)*n(3) C(3,1,2,2)*n(1)+C(3,2,2,2)*n(2)+C(3,3,2,2)*n(3)  C(3,1,2,3)*n(1)+C(3,2,2,3)*n(2)+C(3,3,2,3)*n(3)  C(3,1,1,3)*n(1)+C(3,2,1,3)*n(2)+C(3,3,1,3)*n(3)      C(3,1,2,3)*n(1)+C(3,2,2,3)*n(2)+C(3,3,2,3)*n(3) C(3,1,3,3)*n(1)+C(3,2,3,3)*n(2)+C(3,3,3,3)*n(3)]/1e11
+            
+            # Colin's equations
+            # variables:        a11             a12                 a13             a21             a22             a23             a31                 a32                 a33
+            A1=[        r1.*rp1.*rp1-r1   r2.*rp1.*rp1-r2   r3.*rp1.*rp1-r3     r1.*rp2.*rp1    r2.*rp2.*rp1     r3.*rp2.*rp1     r1.*rp3.*rp1      r2.*rp3.*rp1        r3.*rp3.*rp1 ]
+            # variables:        a11             a12                 a13             a21             a22             a23             a31                  a32                 a33
+            A2=[        r1.*rp1.*rp2      r2.*rp1.*rp2      r3.*rp1.*rp2        r1.*rp2.*rp2-r1 r2.*rp2.*rp2-r2  r3.*rp2.*rp2-r3  r1.*rp3.*rp2      r2.*rp3.*rp2        r3.*rp3.*rp2 ]
+            # variables:        a11             a12                 a13             a21             a22             a23             a31                  a32                 a33
+            A3=[        r1.*rp1.*rp3      r2.*rp1.*rp3      r3.*rp1.*rp3        r1.*rp2.*rp3    r2.*rp2.*rp3     r3.*rp2.*rp3     r1.*rp3.*rp3-r1   r2.*rp3.*rp3-r2     r3.*rp3.*rp3-r3 ]
+            
+            
+            #answers
+            b1=-q1+(q1.*rp1+q2.*rp2+q3.*rp3).*rp1
+            b2=-q2+(q1.*rp1+q2.*rp2+q3.*rp3).*rp2
+            b3=-q3+(q1.*rp1+q2.*rp2+q3.*rp3).*rp3
+            b5=0
+            b6=0
+            b7=0
+    #         b4 = [b1b2b3b5b6b7]
+    #         A4 = [A1A2A3A5A6A7]
+    #         b7 = 0
+    #         A7 = [1 0 0 0 1 0 0 0 1] # Alternative boundary condition: Tim Ruggles Implementation of
+    #         Trace-Free - it does not affect tetragonality, but affects strain
+    #         ratios  (e.g. SiGe samples from NIST)
+            
+            # Using only the last of the traction free conditions (see
+            # Wilkinson methods above): **********************
+            b4 = [b1b2b3b7]
+            A4 = [A1A2A3A7]
+            
+            #solve for variables
+            X3=A4\b4
+            #variables
+            U11=X3(1)
+            U12=X3(2)
+            U13=X3(3)
+            U21=X3(4)
+            U22=X3(5)
+            U23=X3(6)
+            U31=X3(7)
+            U32=X3(8)
+            U33=X3(9)
+            #This U is in the crystal frame
+            U= [U11 U12 U13...
+                U21 U22 U23...
+                U31 U32 U33]
+            F=U+eye(3)
+            
+            [cx,cy]=Theoretical_Pixel_Shift(Qsc,xstar,ystar,zstar,roixc,roiyc,F,Settings.PixelSize,alpha)
+            fitMetrics = computations.metrics.fitMetrics(cx, cy, Cshift, Rshift, tempind)
+            
+            #Calculate Stress - BEJ Jan 2017
+            if nargout == 4
+                [~,Ustrain] = poldec(F)
+                Ustrain = Ustrain-eye(3)
+                for m = 1:3
+                    for n = 1:3
+                        for o = 1:3
+                            for p = 1:3
+                                sigma(m,n) = sigma(m,n)+Cc(m,n,o,p)*Ustrain(o,p)
+                            end
+                        end
+                    end
+                end
+            else
+                Ustrain = 0
+            assignin('base','Cc_CalcF',Cc)
+            assignin('base','Ustrain',Ustrain)
+
+
+    ## for visualizing process
+    if Settings.DoShowPlot
+        pc = [xstar ystar, zstar]
+        UI_utils.plotShifts(RefImage, ScanImage, Ind, RefInd, Settings,...
+            Qsc, pc, tempind, Cshift, Rshift, F, fitMetrics)
