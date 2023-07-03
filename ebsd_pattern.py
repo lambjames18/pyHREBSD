@@ -926,3 +926,4 @@ class BRUKERH5(HDF5PatFile):
       self.yStep = np.float32(headerpath['YSTEP'][()][0])
 
     return 0 #note this function uses multiple returns
+
