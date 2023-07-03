@@ -1,9 +1,10 @@
 import numpy as np
-from scipy import interpolate, linalg
+from scipy import interpolate, linalg, optimize
+
 import rotations
 
 
-def HREBSD(numanlges: int, Euler_Angle: np.ndarray, progname: str, nmldeffile: str, enl):
+def HREBSD(numanlges: int, Euler_Angle: np.ndarray, progname: str, nmldeffile: str):
     """Master function for the HREBSD
     INPUT:
         numanlges: 
@@ -11,6 +12,10 @@ def HREBSD(numanlges: int, Euler_Angle: np.ndarray, progname: str, nmldeffile: s
         progname: 
         nmldeffile: 
         enl: """
+    params = read_nml(nmldeffile)
+    params = dict(numsx=4, numsy=4, size_ROI=5, exptfile="PATFILE", ipf_wd="IDK")
+    binx, biny = params["numsx"], params["numsy"]
+
     raise NotImplementedError("This is not implemented yet")
 
 
@@ -108,9 +113,9 @@ def setROI(L: tuple, PC: tuple, n_roi: int, roi_distance: float) -> tuple(np.nda
 def main_minf(N: int, r: np.ndarray, q: np.ndarray, Euler_Angle:  np.ndarray, C_c: np.ndarray, R_tilt: np.ndarray) -> tuple(np.ndarray, float):
     """Main function for the minimization of the objective function
     INPUT:
-        N: 
+        N: number of rois
         r: array of the regions of interest, shape (3, n_roi)
-        q: shift vector
+        q: , shape (3, n_roi)
         Euler_Angle: array of the Euler angles, shape (3)
         C_c: shape (6,6)
         R_tilt: shape (9)
@@ -118,37 +123,98 @@ def main_minf(N: int, r: np.ndarray, q: np.ndarray, Euler_Angle:  np.ndarray, C_
         Ftensor: shape (9)
         minf: minimum value of the objective function"""
     ### TODO: write this function
-    raise NotImplementedError
+    f = np.zeros((6, r.shape[1]), dtype=float)
+    f[:3] = r
+    f[3:] = q
+
+    # Determine the orientation matricies and rotation matricies for stiffness tensor coordinate transformation
+    gs2c, gc2s, RM, RN = StiffnessRotation(Euler_Angle)
+    RM_inv = inv_ludcmp(RM)
+
+    # Rotate stiffness tensor from crystal to sample frame
+    C = np.zeros((9, 9), dtype=float)
+    C_s = np.matmul(np.matmul(RM_inv, C_c), RN)
+    C[:6, :6] = C_s
+    C[7, :] = R_tilt
+
+    # Setup minimization parameters
+    step_tol = 1e-6
+    func_tol = 1e-6
+    max_eval = 800
+    x = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1], dtype=float)
+    lb = x - 0.05
+    ub = x + 0.05
+    
+    # Minimize the objective function
+    val = optimize.fmin_cobyla(myfunc, x, myconstraint, args=(f,), consargs=(C,), maxfun=max_eval)
+    return val
 
 
-def myfunc(n: int, x: np.ndarray, grad: np.ndarray, need_gradient: int, f: np.ndarray) -> float:
+# def myfunc(n: int, x: np.ndarray, need_gradient: bool, f: np.ndarray) -> float:
+def myfunc(x: np.ndarray, f: np.ndarray) -> float:
     """Objective function for the minimization
     INPUT:
-        n: number of variables
         x: array of the variables, shape (n)
-        grad: array of the gradient, shape (n)
-        need_gradient: flag for the gradient
-        f: array of the objective function, shape (6, 21)
+        f: array of the objective function, shape (6, n)
     OUTPUT:
         fval: value of the objective function"""
     ### TODO: figure out what the actual inputs/outputs are
     ### TODO: write this function
-    raise NotImplementedError
+    need_gradient = False
+    DD = f[2, 0]
+    dims2 = f.shape
+    row1, row2, row3 = np.zeros((3, dims2[1])), np.zeros((3, dims2[1])), np.zeros((3, dims2[1]))
+    r1 = np.repeat(f[0], 3, axis=0).reshape(3, dims2[1])
+    r2 = np.repeat(f[1], 3, axis=0).reshape(3, dims2[1])
+    r3 = np.repeat(f[2], 3, axis=0).reshape(3, dims2[1])
+    q1 = np.repeat(f[3], 3, axis=0).reshape(3, dims2[1])
+    q2 = np.repeat(f[4], 3, axis=0).reshape(3, dims2[1])
+    q3 = np.repeat(f[5], 3, axis=0).reshape(3, dims2[1])
+    row1[0] = 1.0
+    row2[1] = 1.0
+    row3[2] = 1.0
+    if need_gradient:
+        pass
+    val = 0.5*np.sum(
+        linalg.norm(
+            (DD/(x[2]*r1 + x[5]*r2 + x[8]*r3)) * (x[0]*(r1*row1)+x[4]*(r2*row1)+x[6]*(r3*row1)+x[1]*(r1*row2)+x[4]*(r2*row2)+x[7]*(r3*row2) + x[2]*(r1*row3)+x[5]*(r2*row3) + x[8]*(r3*row3)) - ((r1+q1)*row1 + (r2+q2)*row2 + (r3+q3)*row3),
+            axis=1)**2)
+    return val
 
 
-def myconstraint(n: int, x: np.ndarray, grad: np.ndarray, need_gradient: int, c: np.ndarray) -> float:
+# def myconstraint(n: int, x: np.ndarray, need_gradient: bool, C: np.ndarray) -> float:
+def myconstraint(x: np.ndarray, C: np.ndarray) -> float:
     """Constraint function for the minimization
     INPUT:
-        n: number of variables
         x: array of the variables, shape (n)
-        grad: array of the gradient, shape (n)
-        need_gradient: flag for the gradient
-        c: array of the constraint function, shape (9, 9)
+        C: array of the constraint function, shape (9, 9)
     OUTPUT:
         cval: value of the constraint function"""
     ### TODO: figure out what the actual inputs/outputs are
     ### TODO: write this function
-    raise NotImplementedError
+    need_gradient = False
+    # Get rotation matrix for sample tilt
+    R = C[6].reshape(3, 3)
+    # Extract stiffness components
+    C_s = C[:6, :6]
+    if need_gradient:
+        grad = np.zeros(n, dtype=float)
+        grad[0] = np.abs(C[2, 0])
+        grad[1] = np.abs(C[2, 5])
+        grad[2] = np.abs(C[2, 4])
+        grad[3] = np.abs(C[2, 5])
+        grad[4] = np.abs(C[2, 1])
+        grad[5] = np.abs(C[2, 3])
+        grad[6] = np.abs(C[2, 4])
+        grad[7] = np.abs(C[2, 3])
+        grad[8] = np.abs(C[2, 2])
+    F_s = np.matmul(np.matmul(R, x.reshape(3, 3)), np.transpose(R))
+    beta = F_s - np.array([1, 0, 0, 0, 1, 0, 0, 0, 1], dtype=float).reshape(3, 3)
+    e = 0.5 * (beta + np.transpose(beta))
+    e_s = np.array([e[0,0], e[1,1], e[2,2], 2*e[1,2], 2*e[0,2], 2*e[0,1]]).reshape(6, 1)
+    s_s = np.matmul(C_s, e_s)
+    val = s_s[2, 0]
+    return val
 
 
 def StiffnessRotation(Euler_Angle: np.ndarray) -> tuple(np.ndarray, np.ndarray, np.ndarray, np.ndarray):
