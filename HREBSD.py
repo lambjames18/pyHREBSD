@@ -1,22 +1,103 @@
 import numpy as np
 from scipy import interpolate, linalg, optimize
-
+import ebsd_pattern
 import rotations
+from tqdm.auto import tqdm
 
 
-def HREBSD(numanlges: int, Euler_Angle: np.ndarray, progname: str, nmldeffile: str):
+def HREBSD(pat_ref:np.ndarray, test_pats:np.ndarray, EulerAngle: np.ndarray, n_roi: int, roi_size: int, C: np.ndarray, totaltilt: float=70.0):
     """Master function for the HREBSD
     INPUT:
-        numanlges: 
+        pat_ref: reference pattern, shape (binsx, binsy)
+        test_pats: array of the test patterns, shape (n, binsx, binsy)
         Euler_Angle: array of the Euler angles, shape (3)
-        progname: 
-        nmldeffile: 
-        enl: """
-    params = read_nml(nmldeffile)
-    params = dict(numsx=4, numsy=4, size_ROI=5, exptfile="PATFILE", ipf_wd="IDK")
-    binx, biny = params["numsx"], params["numsy"]
+        n_roi: number of regions of interest
+        roi_size: size of the regions of interest
+        C: array of the stiffness tensor, shape (6, 6)"""
+    # Create a few things...
+    dtor = np.pi / 180.0
+    strain = np.zeros((3, 3, test_pats.shape[0]), dtype=float)
+    rotation = np.zeros((3, 3, test_pats.shape[0]), dtype=float)
+    shift_data = np.zeros((3, n_roi, test_pats.shape[0]), dtype=float)
 
-    raise NotImplementedError("This is not implemented yet")
+    # Intensity normalization
+    avg = pat_ref.mean()
+    std = pat_ref.std()
+    pat_ref = (pat_ref - avg) / std
+
+    # Define the interpolation grid and parameters
+    interp_grid = 4
+    z_peak = np.zeros((interp_grid + 1, interp_grid + 1), dtype=float)
+    q_shift = np.zeros((3, n_roi), dtype=float)
+    r = np.zeros((3, n_roi), dtype=float)
+    roi_center = np.zeros((n_roi, 2), dtype=float)
+    ngrid = np.array([(i-interp_grid/2 - 1.0) for i in range(interp_grid + 1)])
+    interp_step = 0.01
+    interp_size = interp_grid / interp_step + 1
+    interp_ngrid = np.array([-interp_size/2 + i*interp_step for i in range(int(interp_size))])
+
+    # Get the rois
+    roi_center, r = setROI(pat_ref.shape, (0, 0, 0), n_roi, roi_size)
+
+    # Loop over the patterns
+    for j in tqdm(range(test_pats.shape[0])):
+        pat_test = test_pats[j]
+        avg = pat_test.mean()
+        std = pat_test.std()
+        pat_test = (pat_test - avg) / std
+
+        # Loop over the rois
+        for i in range(n_roi):
+            pcopy_roi = pat_ref[int(roi_center[i, 0] - roi_size / 2):int(roi_center[i, 0] + roi_size / 2),
+                                int(roi_center[i, 1] - roi_size / 2):int(roi_center[i, 1] + roi_size / 2)]
+            pcopy_roi_test = pat_test[int(roi_center[i, 0] - roi_size / 2):int(roi_center[i, 0] + roi_size / 2),
+                                      int(roi_center[i, 1] - roi_size / 2):int(roi_center[i, 1] + roi_size / 2)]
+            # Apply the windowing function
+            ### TODO: Get the windowing function
+            pcopy_roi = pcopy_roi
+            pcopy_roi_test = pcopy_roi_test
+
+            # Apply the band pass filters
+            ### TODO: Get the band pass filters
+            pcopy_roi = pcopy_roi
+            pcopy_roi_test = pcopy_roi_test
+
+            # Compute the cross correlation function
+            c, max_pos = cross_correlation_function(pcopy_roi.shape, pcopy_roi, pcopy_roi_test)
+
+            # Peak interpolation
+            q, interp_ngrid, zi = peak_interpolate(interp_size, interp_grid, pcopy_roi.shape[0], max_pos, ngrid, interp_step, interp_ngrid, c)
+            q_shift[:, i] = np.array([-q[0], -q[1], 0])
+
+            # Pattern center refinement
+            ### TODO: Write the pattern center refinement function
+
+            # Rotation matrix to sample frame
+            R_tilt = rotations.eu2om(np.array([0.0, -totaltilt * dtor, 0.0], dtype=float))
+
+            # Optimzation routine
+            Ftensor = main_minf(n_roi, r, q_shift, EulerAngle, C, R_tilt)
+
+            # Polar decomposition of the deformation tensor
+            R_detector, Smatrix = linalg.polar(Ftensor.reshape(3, 3))
+
+            # Deformatiom tensor in to sample frame
+            F_sample = np.matmul(np.matmul(R_tilt, Ftensor.reshape(3, 3)), np.transpose(R_tilt))
+
+            # Polar decomposition of the deformation tensor
+            R_sample, Smatrix = linalg.polar(F_sample)
+
+            # Lattice rotation matrix in the sample frame
+            w = Rot2LatRot(R_sample)
+
+            # Distortion tensor
+            beta_sample = F_sample - np.array([1, 0, 0, 0, 1, 0, 0, 0, 1], dtype=float).reshape(3, 3)
+            strain_sample = 0.5 * (beta_sample + np.transpose(beta_sample))
+
+            # Populate the data matrix
+            strain[:, :, j] = strain_sample
+            rotation[:, :, j] = w
+            shift_data[:, :, j] = q_shift
 
 
 def cross_correlation_function(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, tuple]:
