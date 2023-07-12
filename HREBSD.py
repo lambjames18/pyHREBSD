@@ -19,16 +19,18 @@ def HREBSD(numanlges: int, Euler_Angle: np.ndarray, progname: str, nmldeffile: s
     raise NotImplementedError("This is not implemented yet")
 
 
-def cross_correlation_function(dims: tuple, a: np.ndarray, b: np.ndarray) -> tuple(np.ndarray, tuple):
+def cross_correlation_function(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, tuple]:
     """Cross correlation function from EMSoft in the SEM/EMHREBSD.f90 file
     INPUT:
-        dims: tuple of dimensions of the array to be x-correlated
         a: reference image array
         b: test image array
     OUTPUT:
         c: x-correlation function of a and b
         max_pos: tuple of the location of the maximum value in the x-correlation function
     """
+    if a.shape != b.shape:
+        raise ValueError("The patterns must be the same shape. Received shapes: {}, {}".format(a.shape, b.shape))
+    dims = np.array(a.shape)
     cdims = 2 * np.array(dims) - 1
     apad = np.zeros(cdims)
     bpad = np.zeros(cdims)
@@ -38,13 +40,13 @@ def cross_correlation_function(dims: tuple, a: np.ndarray, b: np.ndarray) -> tup
     fftb = np.fft.fft2(bpad)
     ### TODO: Check if this is the correct way to do this
     ### Might not need conj here, might need it on both?
-    c = np.fft.ifft2(ffta * np.conj(fftb))
+    c = np.fft.ifft2(ffta * fftb)
     ### TODO: Check if this is the correct way to do this
     max_pos = np.unravel_index(np.argmax(c), c.shape)
     return (c, max_pos)
 
 
-def peak_interpolate(interp_size: int, size_interp: int, z_size: int, max_pos: tuple, ngrid: np.ndarray, interp_step: float, interp_ngrid: np.ndarray, z: np.ndarray) -> tuple(np.ndarray, np.ndarray, np.ndarray):
+def peak_interpolate(interp_size: int, size_interp: int, z_size: int, max_pos: tuple, ngrid: np.ndarray, interp_step: float, interp_ngrid: np.ndarray, z: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Peak interpolation function from EMSoft in the SEM/EMHREBSD.f90 file
     ### TODO: interp_size is not used, need to check if this is correct
     INPUT:
@@ -82,15 +84,13 @@ def peak_interpolate(interp_size: int, size_interp: int, z_size: int, max_pos: t
     return (q, interp_ngrid, zi)
 
 
-def setROI(L: tuple, PC: tuple, n_roi: int, roi_distance: float) -> tuple(np.ndarray, np.ndarray):
+def setROI(L: tuple, PC: tuple, n_roi: int, roi_distance: float) -> tuple[np.ndarray, np.ndarray]:
     """Set the region of interest
     INPUT:
         L: tuple of the dimensions of the image
         PC: tuple of the pattern center
         n_roi: number of regions of interest
         roi_distance: distance between the regions of interest
-        roi_center: array of the center of the regions of interest, shape (n_roi, 2)
-        r: array of the regions of interest, shape (3, n_roi)
     OUTPUT:
         roi_center: array of the center of the regions of interest, shape (n_roi, 2)
         r: array of the regions of interest, shape (3, n_roi)
@@ -110,7 +110,7 @@ def setROI(L: tuple, PC: tuple, n_roi: int, roi_distance: float) -> tuple(np.nda
     return (roi_center, r)
 
 
-def main_minf(N: int, r: np.ndarray, q: np.ndarray, Euler_Angle:  np.ndarray, C_c: np.ndarray, R_tilt: np.ndarray) -> tuple(np.ndarray, float):
+def main_minf(N: int, r: np.ndarray, q: np.ndarray, Euler_Angle:  np.ndarray, C_c: np.ndarray, R_tilt: np.ndarray) -> tuple[np.ndarray, float]:
     """Main function for the minimization of the objective function
     INPUT:
         N: number of rois
@@ -217,7 +217,7 @@ def myconstraint(x: np.ndarray, C: np.ndarray) -> float:
     return val
 
 
-def StiffnessRotation(Euler_Angle: np.ndarray) -> tuple(np.ndarray, np.ndarray, np.ndarray, np.ndarray):
+def StiffnessRotation(Euler_Angle: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute the stiffness rotation matrix
     INPUT:
         Euler_Angle: array of the Euler angles, shape (3)
