@@ -125,27 +125,41 @@ def GetROIs(I1, ROInum, pixsize, roisize, ROImethod):
 if __name__ == "__main__":
     import ebsd_pattern
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
+    from matplotlib.patches import Rectangle, ConnectionPatch
+    from scipy import ndimage
+    from skimage import exposure
     
-    p = ebsd_pattern.get_pattern_file_obj("D:/Research/R2S10S5/Data/361.up2").read_data()
-    nrows = p.nFileRows
-    ncols = p.nFileCols
-    npats = p.nPatterns
-    print(npats)
-    p = p.patterns
+    obj = ebsd_pattern.get_pattern_file_obj("E:/DED_CoNi90.up2")
+    obj.read_header()
     
-    I1 = p[npats // 2]
+    I1, I2 = obj.pat_reader(100, 2)
+    I1 = exposure.equalize_adapthist(I1, clip_limit=0.03)
+    I2 = exposure.equalize_adapthist(I2, clip_limit=0.03)
+    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+
+    I = [I1, I2]
     ROInum = 15
-    ROImethod = "Grid"
+    ROImethod = "Annular"
     pixsize = I1.shape[0]
     roisize = round(pixsize * 0.15)
-    out = GetROIs(I1, ROInum, pixsize, roisize, ROImethod)
+    outs = []
     
-    # Plot image and draw on rectangles for the ROIs
-    fig, ax = plt.subplots()
-    ax.imshow(I1, cmap="gray")
-    out = [out[0].flatten(), out[1].flatten()]
-    for i in range(len(out[0])):
-        r = Rectangle((out[0][i] - roisize / 2, out[1][i] - roisize / 2), roisize, roisize, edgecolor="red", facecolor="none")
-        ax.add_patch(r)
+    for i in range(2):
+        out = GetROIs(I[i], ROInum, pixsize, roisize, ROImethod)
+        outs.append(out)
+        # Plot image and draw on rectangles for the ROIs
+        ax[i].imshow(I1, cmap="gray")
+        ax[i].set_axis_off()
+        out = [out[0].flatten(), out[1].flatten()]
+        # for j in range(len(out[0])):
+            # r = Rectangle((out[0][j] - roisize / 2, out[1][j] - roisize / 2), roisize, roisize, edgecolor="red", facecolor="none", linewidth=2)
+            # ax[i].add_patch(r)
+            # ax[i].scatter(out[0][j], out[1][j], c="red", s=5)
+    
+    # Draw lines between subplots and the ROIs
+    # for i in range(ROInum):
+    #     xyA = (outs[0][0][i], outs[0][1][i])
+    #     xyB = (outs[1][0][i], outs[1][1][i])
+    #     con = ConnectionPatch(xyA=xyA, xyB=xyB, coordsA="data", coordsB="data", axesA=ax[0], axesB=ax[1], color="red", linewidth=2)
+    #     ax[1].add_artist(con)
     plt.show()

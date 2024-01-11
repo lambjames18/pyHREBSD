@@ -5,7 +5,12 @@ import rotations
 from tqdm.auto import tqdm
 
 
-def HREBSD(pat_ref:np.ndarray, test_pats:np.ndarray, EulerAngle: np.ndarray, n_roi: int, roi_size: int, C: np.ndarray, totaltilt: float=70.0):
+def HREBSD(pat_ref: np.ndarray,
+           test_pats: np.ndarray,
+           EulerAngle: np.ndarray,
+           n_roi: int, roi_size: int,
+           PC: tuple, C: np.ndarray, totaltilt: float = 70.0
+           ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Master function for the HREBSD
     INPUT:
         pat_ref: reference pattern, shape (binsx, binsy)
@@ -15,15 +20,18 @@ def HREBSD(pat_ref:np.ndarray, test_pats:np.ndarray, EulerAngle: np.ndarray, n_r
         roi_size: size of the regions of interest
         C: array of the stiffness tensor, shape (6, 6)"""
     # Create a few things...
+    # Part one, get everything together
     dtor = np.pi / 180.0
     strain = np.zeros((3, 3, test_pats.shape[0]), dtype=float)
     rotation = np.zeros((3, 3, test_pats.shape[0]), dtype=float)
     shift_data = np.zeros((3, n_roi, test_pats.shape[0]), dtype=float)
+    print("Setup complete")
 
     # Intensity normalization
     avg = pat_ref.mean()
     std = pat_ref.std()
     pat_ref = (pat_ref - avg) / std
+    print("Intensity normalization complete")
 
     # Define the interpolation grid and parameters
     interp_grid = 4
@@ -31,13 +39,15 @@ def HREBSD(pat_ref:np.ndarray, test_pats:np.ndarray, EulerAngle: np.ndarray, n_r
     q_shift = np.zeros((3, n_roi), dtype=float)
     r = np.zeros((3, n_roi), dtype=float)
     roi_center = np.zeros((n_roi, 2), dtype=float)
-    ngrid = np.array([(i-interp_grid/2 - 1.0) for i in range(interp_grid + 1)])
+    ngrid = np.array([(i-interp_grid/2) for i in range(interp_grid + 1)])
     interp_step = 0.01
     interp_size = interp_grid / interp_step + 1
-    interp_ngrid = np.array([-interp_size/2 + i*interp_step for i in range(int(interp_size))])
+    interp_ngrid = np.array([-interp_grid/2 + i*interp_step for i in range(int(interp_size))])
+    print("Interpolation grid and parameters defined")
 
     # Get the rois
-    roi_center, r = setROI(pat_ref.shape, (0, 0, 0), n_roi, roi_size)
+    roi_center, r = setROI(pat_ref.shape, PC, n_roi, roi_size)
+    print("ROI's defined. Performing loop...")
 
     # Loop over the patterns
     for j in tqdm(range(test_pats.shape[0])):
@@ -51,7 +61,7 @@ def HREBSD(pat_ref:np.ndarray, test_pats:np.ndarray, EulerAngle: np.ndarray, n_r
             pcopy_roi = pat_ref[int(roi_center[i, 0] - roi_size / 2):int(roi_center[i, 0] + roi_size / 2),
                                 int(roi_center[i, 1] - roi_size / 2):int(roi_center[i, 1] + roi_size / 2)]
             pcopy_roi_test = pat_test[int(roi_center[i, 0] - roi_size / 2):int(roi_center[i, 0] + roi_size / 2),
-                                      int(roi_center[i, 1] - roi_size / 2):int(roi_center[i, 1] + roi_size / 2)]
+                                        int(roi_center[i, 1] - roi_size / 2):int(roi_center[i, 1] + roi_size / 2)]
             # Apply the windowing function
             ### TODO: Get the windowing function
             pcopy_roi = pcopy_roi
@@ -63,20 +73,22 @@ def HREBSD(pat_ref:np.ndarray, test_pats:np.ndarray, EulerAngle: np.ndarray, n_r
             pcopy_roi_test = pcopy_roi_test
 
             # Compute the cross correlation function
-            c, max_pos = cross_correlation_function(pcopy_roi.shape, pcopy_roi, pcopy_roi_test)
+            c, max_pos = cross_correlation_function(pcopy_roi, pcopy_roi_test)
+            z_peak = c[max_pos[0] - interp_grid // 2:max_pos[0] + interp_grid // 2 + 1,
+                    max_pos[1] - interp_grid // 2:max_pos[1] + interp_grid // 2 + 1]
 
             # Peak interpolation
-            q, interp_ngrid, zi = peak_interpolate(interp_size, interp_grid, pcopy_roi.shape[0], max_pos, ngrid, interp_step, interp_ngrid, c)
+            q, interp_ngrid = peak_interpolate(max_pos, z_peak, ngrid, interp_ngrid, pcopy_roi.shape[0], interp_step)
             q_shift[:, i] = np.array([-q[0], -q[1], 0])
 
             # Pattern center refinement
             ### TODO: Write the pattern center refinement function
 
             # Rotation matrix to sample frame
-            R_tilt = rotations.eu2om(np.array([0.0, -totaltilt * dtor, 0.0], dtype=float))
+            R_tilt = rotations.eu2om(np.array([0.0, - totaltilt * dtor, 0.0], dtype=float))
 
             # Optimzation routine
-            Ftensor = main_minf(n_roi, r, q_shift, EulerAngle, C, R_tilt)
+            Ftensor = main_minf(n_roi, r, q_shift, EulerAngle, C, R_tilt.reshape(-1))
 
             # Polar decomposition of the deformation tensor
             R_detector, Smatrix = linalg.polar(Ftensor.reshape(3, 3))
@@ -98,6 +110,8 @@ def HREBSD(pat_ref:np.ndarray, test_pats:np.ndarray, EulerAngle: np.ndarray, n_r
             strain[:, :, j] = strain_sample
             rotation[:, :, j] = w
             shift_data[:, :, j] = q_shift
+    
+    return (strain, rotation, shift_data)
 
 
 def cross_correlation_function(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, tuple]:
@@ -116,18 +130,18 @@ def cross_correlation_function(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray
     apad = np.zeros(cdims)
     bpad = np.zeros(cdims)
     apad[:dims[0], :dims[1]] = a
-    bpad[:dims[0], :dims[1]] = b
+    bpad[:dims[0], :dims[1]] = b[::-1, ::-1]
     ffta = np.fft.fft2(apad)
     fftb = np.fft.fft2(bpad)
     ### TODO: Check if this is the correct way to do this
     ### Might not need conj here, might need it on both?
-    c = np.fft.ifft2(ffta * fftb)
+    c = np.real(np.fft.ifft2(ffta * fftb))
     ### TODO: Check if this is the correct way to do this
     max_pos = np.unravel_index(np.argmax(c), c.shape)
     return (c, max_pos)
 
 
-def peak_interpolate(interp_size: int, size_interp: int, z_size: int, max_pos: tuple, ngrid: np.ndarray, interp_step: float, interp_ngrid: np.ndarray, z: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def peak_interpolate(max_pos: tuple, z: np.ndarray, ngrid: np.ndarray, interp_ngrid: np.ndarray, z_size: int, interp_step: float) -> tuple[np.ndarray, np.ndarray]:
     """Peak interpolation function from EMSoft in the SEM/EMHREBSD.f90 file
     ### TODO: interp_size is not used, need to check if this is correct
     INPUT:
@@ -144,25 +158,15 @@ def peak_interpolate(interp_size: int, size_interp: int, z_size: int, max_pos: t
         interp_ngrid: array of the interpolation grid, shape (size_interp)
         z: array of the interpolation grid, shape (interp_size, interp_size)
     """
-    f = interpolate.RectBivariateSpline(ngrid, ngrid, z, kx=1, ky=1, s=0)(interp_ngrid[j], interp_ngrid[i])
-    f = lambda args: rgbi3p(*args)
-    zi = np.zeros((size_interp, size_interp), dtype=float)
-
-    for i in range(size_interp):
-        for j in range(size_interp):
-            if i == 0 and j == 0:
-                md = 1
-            else:
-                md = 2
-            # zi[j, i] = f(md, interp_size, interp_size, ngrid, ngrid, z, 1, interp_ngrid[j], interp_ngrid[i])
-            zi[j, i] = f[j, i]
+    f = interpolate.RectBivariateSpline(ngrid, ngrid, z, kx=1, ky=1, s=0)
+    zi = f(interp_ngrid, interp_ngrid, grid=True)
 
     max_pos_interp = np.unravel_index(np.argmax(zi), zi.shape)
-    interp_half = (size_interp - 1) / 2
+    interp_half = (interp_ngrid.shape[0] - 1) / 2
     q = np.array([(max_pos[1] - (z_size + 1) / 2) + ((max_pos_interp[1] - interp_half) * interp_step),
                   ((z_size + 1) / 2 - max_pos[0]) + ((interp_half - max_pos_interp[0]) * interp_step)])
 
-    return (q, interp_ngrid, zi)
+    return (q, interp_ngrid)
 
 
 def setROI(L: tuple, PC: tuple, n_roi: int, roi_distance: float) -> tuple[np.ndarray, np.ndarray]:
@@ -187,7 +191,7 @@ def setROI(L: tuple, PC: tuple, n_roi: int, roi_distance: float) -> tuple[np.nda
         else:
             roi_center[i-1] = [Lx / 2, Ly / 2]
         r[:, i-1] = [roi_center[i-1][0] - PCx, roi_center[i-1][1] - PCy, DD]
-    
+
     return (roi_center, r)
 
 
@@ -225,7 +229,7 @@ def main_minf(N: int, r: np.ndarray, q: np.ndarray, Euler_Angle:  np.ndarray, C_
     x = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1], dtype=float)
     lb = x - 0.05
     ub = x + 0.05
-    
+
     # Minimize the objective function
     val = optimize.fmin_cobyla(myfunc, x, myconstraint, args=(f,), consargs=(C,), maxfun=max_eval)
     return val
@@ -239,8 +243,6 @@ def myfunc(x: np.ndarray, f: np.ndarray) -> float:
         f: array of the objective function, shape (6, n)
     OUTPUT:
         fval: value of the objective function"""
-    ### TODO: figure out what the actual inputs/outputs are
-    ### TODO: write this function
     need_gradient = False
     DD = f[2, 0]
     dims2 = f.shape
@@ -256,10 +258,13 @@ def myfunc(x: np.ndarray, f: np.ndarray) -> float:
     row3[2] = 1.0
     if need_gradient:
         pass
-    val = 0.5*np.sum(
-        linalg.norm(
-            (DD/(x[2]*r1 + x[5]*r2 + x[8]*r3)) * (x[0]*(r1*row1)+x[4]*(r2*row1)+x[6]*(r3*row1)+x[1]*(r1*row2)+x[4]*(r2*row2)+x[7]*(r3*row2) + x[2]*(r1*row3)+x[5]*(r2*row3) + x[8]*(r3*row3)) - ((r1+q1)*row1 + (r2+q2)*row2 + (r3+q3)*row3),
-            axis=1)**2)
+    # val = 0.5*np.sum( linalg.norm( (DD/(x[2]*r1 + x[5]*r2 + x[8]*r3)) * (x[0]*(r1*row1)+x[4]*(r2*row1)+x[6]*(r3*row1)+x[1]*(r1*row2)+x[4]*(r2*row2)+x[7]*(r3*row2) + x[2]*(r1*row3)+x[5]*(r2*row3) + x[8]*(r3*row3)) - ((r1+q1)*row1 + (r2+q2)*row2 + (r3+q3)*row3), axis=1)**2)
+    
+    A = x[2]*r1 + x[5]*r2 + x[8]*r3
+    B = x[0]*(r1*row1) + x[3]*(r2*row1) + x[6]*(r3*row1) + x[1]*(r1*row2) + x[4]*(r2*row2) + x[7]*(r3*row2) + x[2]*(r1*row3) + x[5]*(r2*row3) + x[8]*(r3*row3)
+    C = (r1+q1)*row1 + (r2+q2)*row2 + (r3+q3)*row3
+    array = DD / A * B - C
+    val = 0.5*np.sum(linalg.norm(array, axis=1)**2)
     return val
 
 
@@ -307,7 +312,6 @@ def StiffnessRotation(Euler_Angle: np.ndarray) -> tuple[np.ndarray, np.ndarray, 
         gc2s: shape (3,3)
         RM: shape (3,3)
         RN: shape (3,3)"""
-    ### TODO: Get rotations functions together
     gs2c = rotations.eu2om(Euler_Angle)
     gc2s = np.transpose(gs2c)
     R = gs2c
@@ -334,7 +338,7 @@ def StiffnessRotation(Euler_Angle: np.ndarray) -> tuple[np.ndarray, np.ndarray, 
     return (gs2c, gc2s, RM, RN)
 
 
-def inv_ludcmp(a: np.ndarray, n: int) -> np.ndarray:
+def inv_ludcmp(a: np.ndarray) -> np.ndarray:
     """Invert a matrix using LU decomposition
     INPUT:
         a: array of the matrix to be inverted, shape (n, n)
@@ -433,7 +437,7 @@ def cubicInterpolate(p: np.ndarray, x: float) -> float:
 
 
 def rgbi3p(md: int, nxd: int, nyd: int, xd: np.ndarray, yd: np.ndarray, zd: np.ndarray, nip: int, xi: float, yi: float) -> np.ndarray:
-    """Rectanguular-grid bivariate interpolation
+    """Rectangular-grid bivariate interpolation
     INPUT:
         md: mode of computation
             1 for new, 2 for old
