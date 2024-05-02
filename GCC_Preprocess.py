@@ -1,6 +1,10 @@
+import time
 import numpy as np
 from scipy import interpolate, signal, ndimage
+import multiprocessing as mp
 from tqdm.auto import tqdm
+
+import utilities
 
 
 def Tukey_Hanning_window(sig, alpha=0.4, return_window=False):
@@ -71,7 +75,7 @@ def FMT(image, X, Y, x, y):
     return sig, image_polar
 
 
-def GCC_Initial_Guess(ref: np.ndarray, targets: np.ndarray):
+def _get_gcc_guesses(ref: np.ndarray, targets: np.ndarray, progress=None):
     """Perform a global cross-correlation initial guess for the homographies of the targets.
     Rotation is determined using a Fourier-Mellin Transform.
     Translation is determined using a 2D cross-correlation.
@@ -79,19 +83,9 @@ def GCC_Initial_Guess(ref: np.ndarray, targets: np.ndarray):
     Args:
         ref (np.ndarray): The reference pattern. (H, W)
         targets (np.ndarray): The target patterns. (M, N, H, W) or (N, H, W) or (H, W) for example.
+        progress (int): The index of the target in the targets array. Used for logging during multiprocessing.
     Returns:
         np.ndarray: The homographies of the targets. (M, N, 8) or (N, 8) or (8) for example."""
-    # Check inputs
-    targets = np.array(targets)
-    if targets.ndim == 4:
-        full_shape = targets.shape
-        targets = targets.reshape(full_shape[0] * full_shape[1], full_shape[2], full_shape[3])
-    elif targets.ndim == 2:
-        targets = targets.reshape(1, targets.shape[0], targets.shape[1])
-        full_shape = None
-    else:
-        full_shape = None
-
     # Create the subset slice
     c = np.array(ref.shape) // 2
     subset_slice = (slice(c[0] - 64, c[0] + 64), slice(c[1] - 64, c[1] + 64))
@@ -100,7 +94,6 @@ def GCC_Initial_Guess(ref: np.ndarray, targets: np.ndarray):
     ref = window_and_normalize(ref[subset_slice])
     subset_slice = (slice(None),) + subset_slice
     targets = window_and_normalize(targets[subset_slice])
-    print(ref.shape, targets.shape)
 
     # Get the dimensions of the image
     height, width = ref.shape
@@ -130,7 +123,7 @@ def GCC_Initial_Guess(ref: np.ndarray, targets: np.ndarray):
     measurements = np.zeros((len(targets), 3), dtype=np.float32)
 
     # Loop through the targets
-    for i in tqdm(range(len(targets))):
+    for i in range(len(targets)):
         tar = targets[i]
         # Do the angle search first
         tar_fft = np.fft.fftshift(np.fft.fft2(tar))
@@ -152,10 +145,50 @@ def GCC_Initial_Guess(ref: np.ndarray, targets: np.ndarray):
     _x = measurements[:, 0] * np.ones(measurements.shape[0])
     _y = measurements[:, 1] * np.ones(measurements.shape[0])
     homographies = np.array([_c - 1, -_s, _x*_c-_y*_s, _s, _c - 1, _x*_s+_y*_c, _0, _0]).T
-
-    # Reshape the angles
-    if full_shape is not None:
-        homographies = homographies.reshape(full_shape[:2] + (8,))
-    else:
-        homographies = np.squeeze(homographies)
+    if progress is not None:
+        print(f"Progress: {round(progress * 100, 2)}%" + " "*10, end="\r", flush=True)
     return homographies
+
+
+def get_initial_guess(ref, targets, split_size=7):
+    # Check inputs
+    targets = np.asarray(targets)
+
+    # Get the guesses
+    if targets.ndim == 2:
+        # Case where we have a single target
+        return np.squeeze(_get_gcc_guesses(ref, targets.reshape(1, *targets.shape)))
+    elif targets.ndim == 3 and targets.shape[0] < 100:
+        # Case where we have a 1D array of targets but not enough to parallelize
+        return _get_gcc_guesses(ref, targets)
+    elif targets.ndim == 4 and targets.size < 100:
+        # Case where we have a 2D array of targets but not enough to parallelize
+        shape = targets.shape[:2]
+        return _get_gcc_guesses(ref, targets.reshape(-1, targets.shape[2], targets.shape[3])).reshape(shape + (8,))
+    elif targets.ndim == 3 and targets.shape[0] >= 100:
+        # Case where we have a 1D array of targets and enough to parallelize
+        print("There are enough targets to parallelize. Starting pool.")
+        N = mp.cpu_count() // 2
+        splits = np.array_split(targets, split_size)
+        with mp.Pool(N) as pool:
+            results = pool.starmap(_get_gcc_guesses, [(ref, split, i/len(splits)) for i, split in enumerate(splits)])
+        return np.concatenate(results)
+    else:
+        # Case where we have a 2D array of targets and enough to parallelize
+        print("There are enough targets to parallelize. Starting pool.")
+        shape = targets.shape[:2]
+        N = mp.cpu_count() // 2
+        splits = np.array_split(targets.reshape(-1, targets.shape[2], targets.shape[3]), np.prod(shape[:2]) // split_size)
+        with mp.Pool(N) as pool:
+            results = pool.starmap(_get_gcc_guesses, [(ref, split, i/len(splits)) for i, split in enumerate(splits)])
+        return np.concatenate(results).reshape(shape + (8,))
+
+
+if __name__ == "__main__":
+    up2 = "E:/cells/CoNi90-OrthoCells.up2"
+    ang = "E:/cells/CoNi90-OrthoCells.ang"
+    pats, ang_data = utilities.get_scan_data(up2, ang, (2048, 2048), 13)
+
+    t0 = time.time()
+    guesses = get_initial_guess(pats[0, 0], pats[:20, :20])
+    d1 = time.time() - t0

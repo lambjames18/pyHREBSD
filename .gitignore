@@ -1,1 +1,6 @@
-__pycache__/ebsd_pattern.cpython-310.pyc
+*.pyc
+*.png
+*.tif
+*.tiff
+*.npy
+*.gif
