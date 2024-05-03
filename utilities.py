@@ -129,8 +129,8 @@ def read_ang(path: str, Nxy: tuple, pixel_size: float = 10.0) -> namedtuple:
     ang_data = np.moveaxis(ang_data, 2, 0)
 
     # Package everything into a namedtuple
-    ang_data = namedtuple("ang_file", names)(*ang_data, eulers=euler, quats=qu, shape=shape, pc=PC, pidx=pidx)
-    return ang_data
+    out = namedtuple("ang_file", names)(*ang_data, eulers=euler, quats=qu, shape=shape, pc=PC, pidx=pidx)
+    return out
 
 
 def get_scan_data(up2: str, ang: str, Nxy: tuple, pixel_size: float = 10.0) -> tuple:
@@ -151,7 +151,7 @@ def get_scan_data(up2: str, ang: str, Nxy: tuple, pixel_size: float = 10.0) -> t
     pat_obj = read_up2(up2)
 
     # Get the ang data
-    ang_data = read_ang(ang, ang_data.pc, Nxy, pixel_size)
+    ang_data = read_ang(ang, Nxy, pixel_size)
 
     return pat_obj, ang_data
 
@@ -178,18 +178,16 @@ def get_patterns(pat_obj: namedtuple, idx: np.ndarray | list | tuple = None) -> 
         reshape = False
 
     # Read in the patterns
-    pat_obj.datafile.seek(16)
+    start_byte = np.int64(16)
+    pattern_bytes = np.int64(pat_obj.patshape[0] * pat_obj.patshape[1] * 2)
     pats = np.zeros((len(idx), *pat_obj.patshape), dtype=np.uint16)
     for i in tqdm(range(len(idx)), desc="Reading patterns", unit="pats"):
-        pat = idx[i]
-        pat_obj.datafile.seek(pat * pat_obj.patshape[0] * pat_obj.patshape[1] * 2 + 16)
+        pat = np.int64(idx[i])
+        seek_pos = start_byte + pat * pattern_bytes
+        pat_obj.datafile.seek(seek_pos)
         pats[i] = np.frombuffer(pat_obj.datafile.read(pat_obj.patshape[0] * pat_obj.patshape[1] * 2), dtype=np.uint16).reshape(pat_obj.patshape)
 
-    # Format and reshape the patterns
-    pats = pats.astype(np.float32)
-    mins = pats.min(axis=(1, 2))[:, None, None]
-    maxs = pats.max(axis=(1, 2))[:, None, None]
-    pats = (pats - mins) / (maxs - mins)
+    # Reshape the patterns
     if reshape:
         pats = pats.reshape(out_shape)
 
@@ -303,7 +301,7 @@ def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple 
         out = out.reshape(reshape + out.shape[1:])
 
     # Clear memory
-    del imgs, background, avg
+    del imgs
     torch.cuda.empty_cache()
 
     return out
