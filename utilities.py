@@ -15,13 +15,12 @@ from skimage import exposure, filters
 import torch
 import kornia
 
-import ebsd_pattern as ep
 import rotations
 
 NUMERIC = r"[-+]?\d*\.\d+|\d+"
 
 
-def convert_pc(PC: tuple | list | np.ndarray, N: tuple, delta: float, b: float = 1.0) -> tuple:
+def convert_pc(PC: tuple | list | np.ndarray, N: tuple, delta: float, b: float = 1.0, in_format="edax", out_format="std") -> tuple:
     """
     Converts the pattern center from EDAX/TSL standard to the EMsoft standard
     (xstar, ystar, zstar) -> (xpc, ypc, L)
@@ -34,10 +33,21 @@ def convert_pc(PC: tuple | list | np.ndarray, N: tuple, delta: float, b: float =
 
     Returns:
         PC (tuple): The pattern center (xpc, ypc, L)"""
-    xpc = np.around(N[0] * (PC[0] - 0.5), 4)
-    ypc = np.around(N[0] * PC[1] - b * N[1] * 0.5, 4)
-    L = np.around(N[0] * delta * PC[2], 4)
-    return (xpc, ypc, L)
+    if in_format == "edax" and out_format == "std":
+        xpc = np.around(N[0] * (PC[0] - 0.5), 4)
+        ypc = np.around(N[0] * PC[1] - b * N[1] * 0.5, 4)
+        # L = np.around(N[0] * delta * PC[2], 4)
+        L = np.around(N[0] * PC[2], 4)  # We don't multiply by delta here because we want dimensions to be in pixels
+        pc = (xpc, ypc, L)
+    elif in_format == "std" and out_format == "edax":
+        xstar = np.around(PC[0] / N[0] + 0.5, 4)
+        ystar = np.around((PC[1] + b * N[1] * 0.5) / N[0], 4)
+        # L = np.around(PC[2] / (N[0] * delta), 4)
+        zstar = np.around(PC[2] / N[0], 4)
+        pc = (xstar, ystar, zstar)
+    else:
+        raise ValueError("Unsupported format. Options are 'edax' and 'std'.")
+    return pc
 
 
 def read_up2(up2: str) -> namedtuple:
@@ -168,6 +178,7 @@ def get_patterns(pat_obj: namedtuple, idx: np.ndarray | list | tuple = None) -> 
     # Handle inputs
     if idx is None:
         idx = range(pat_obj.nPatterns)
+        reshape = False
     elif isinstance(idx, np.ndarray):
         reshape = False
         if idx.ndim >= 2:
@@ -236,12 +247,13 @@ def get_sharpness(imgs: np.ndarray) -> np.ndarray:
     return shp
 
 
-def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple = None) -> np.ndarray:
+def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple = None, batch_size: int = 8) -> np.ndarray:
     """Cleans patterns by equalizing the histogram and normalizing.
     
     Args:
         pats (np.ndarray): The patterns to clean. (N, H, W)
         equalize (bool): Whether to equalize the histogram.
+        dog_sigmas (tuple): The sigmas for the difference of Gaussians filter. If None, no bandpass filtering is done.
 
     Returns:
         np.ndarray: The cleaned patterns. (N, H, W)"""
@@ -257,7 +269,7 @@ def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple 
     imgs = imgs.astype(np.float32).reshape(imgs.shape[0], 1, imgs.shape[1], imgs.shape[2])
     if dog_sigmas is None:
         bandpass = False
-    else:    
+    else:
         bandpass = True
 
     # Convert to torch tensor, set device, create output tensor
@@ -272,27 +284,25 @@ def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple 
     # Create processing functions
     def make_odd(x):
         return  x if x % 2 == 1 else x + 1
-    def NONE(img):
-        return img
-    def equalize_func(img):
-        equalized = kornia.enhance.equalize_clahe(img)
-        out = kornia.enhance.normalize_min_max(equalized, 0.0, 1.0)
-        return out
-    def bandpass_func(img):
-        kl = make_odd(int(dog_sigmas[0] * 3))
-        kh = make_odd(int(dog_sigmas[1] * 3))
-        low_pass = kornia.filters.gaussian_blur2d(img, (kl, kl), (dog_sigmas[0], dog_sigmas[0]))
-        high_pass = kornia.filters.gaussian_blur2d(img, (kh, kh), (dog_sigmas[1], dog_sigmas[1]))
-        out = kornia.enhance.normalize_min_max(low_pass - high_pass, 0.0, 1.0)
-        return out
-    def all_func(img):
-        return equalize_func(bandpass_func(img))
 
-    # Reshape into batches and process patterns
-    imgs = imgs.reshape(-1, 4, 1, imgs.shape[2], imgs.shape[3])
-    func = all_func if equalize and bandpass else equalize_func if equalize else bandpass_func if bandpass else NONE
-    for i in tqdm(range(imgs.shape[0]), desc='Processing patterns', unit='pats'):
-        imgs[i] = func(kornia.enhance.normalize_min_max(imgs[i], 0.0, 1.0))
+    # Process the patterns, using batches
+    imgs_batched = torch.split(imgs, batch_size, dim=0)
+    print(imgs.shape, len(imgs_batched), imgs_batched[0].shape, imgs_batched[-1].shape)
+    for i in tqdm(range(imgs_batched.shape[0]), desc='Processing patterns', unit='pats'):
+        imgs = kornia.enhance.normalize_min_max(imgs_batched[i], 0.0, 1.0)
+        if bandpass:
+            kl = make_odd(int(dog_sigmas[0] * 3))
+            kh = make_odd(int(dog_sigmas[1] * 3))
+            low_pass = kornia.filters.gaussian_blur2d(imgs, (kl, kl), (dog_sigmas[0], dog_sigmas[0]))
+            high_pass = kornia.filters.gaussian_blur2d(imgs, (kh, kh), (dog_sigmas[1], dog_sigmas[1]))
+            imgs = kornia.enhance.normalize_min_max(low_pass - high_pass, 0.0, 1.0)
+        if equalize:
+            imgs = kornia.enhance.equalize_clahe(imgs)
+            imgs = kornia.enhance.normalize_min_max(imgs, 0.0, 1.0)
+        
+        imgs_batched[i] = imgs
+    imgs = torch.cat(imgs_batched, dim=0)
+    print(imgs.shape)
 
     # Normalize
     out = imgs.cpu().numpy()
@@ -309,7 +319,7 @@ def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple 
 
 def get_index(point: tuple, size: int, ang_data: namedtuple) -> np.ndarray:
     """Get the indices of the patterns that reside within a region of interest.
-    
+
     Args:
         point (tuple): The center of the region of interest.
         size (int): The size of the region of interest.
@@ -319,8 +329,8 @@ def get_index(point: tuple, size: int, ang_data: namedtuple) -> np.ndarray:
         np.ndarray: The indices of the patterns within the region of interest."""
     # Get the indices of the patterns in the region of interest
     x, y = point
-    x0, x1 = min(x - size // 2, 0), max(x + size // 2, ang_data.shape[0])
-    y0, y1 = min(y - size // 2, 0), max(y + size // 2, ang_data.shape[1])
+    x0, x1 = max(x - size // 2, 0), min(x + size // 2, ang_data.shape[0])
+    y0, y1 = max(y - size // 2, 0), min(y + size // 2, ang_data.shape[1])
     if x1 - x0 < size:
         print(" -- get_index warning: the region of interest is too large in the x-direction given the center point.")
     if y1 - y0 < size:
@@ -329,12 +339,47 @@ def get_index(point: tuple, size: int, ang_data: namedtuple) -> np.ndarray:
     return idx
 
 
+def get_stiffness_tensor(*C, structure) -> np.ndarray:
+    """Convert format elastic constants into the full stiffness tensor.
+    Supports cubic and hexagonal crystal structures.
+
+    Args:
+        C (tuple): The elastic constants.
+                   For cubic, C11, C12, C44.
+                   For hexagonal, C11, C12, C13, C33, C44.
+        structure (str): The crystal structure. Options are "cubic" and "hexagonal"."""
+    C = np.array(C)
+    if structure == "cubic":
+        if C.shape[0] != 3:
+            raise ValueError("Cubic crystal structure requires 3 elastic constants in the following order: C11, C12, C44.")
+        C = np.array([[C[0], C[1], C[1],    0,    0,    0],
+                      [C[1], C[0], C[1],    0,    0,    0],
+                      [C[1], C[1], C[0],    0,    0,    0],
+                      [0,       0,    0, C[2],    0,    0],
+                      [0,       0,    0,    0, C[2],    0],
+                      [0,       0,    0,    0,    0, C[2]]])
+    elif structure == "hexagonal":
+        if C.shape[0] != 5:
+            raise ValueError("Hexagonal crystal structure requires 5 elastic constants in the following order: C11, C12, C13, C33, C44.")
+        C66 = 0.5 * (C[0] - C[1])
+        C = np.array([[C[0], C[1], C[2],    0,    0,   0],
+                      [C[1], C[0], C[2],    0,    0,   0],
+                      [C[2], C[2], C[3],    0,    0,   0],
+                      [0,       0,    0, C[4],    0,   0],
+                      [0,       0,    0,    0, C[4],   0],
+                      [0,       0,    0,    0,    0, C66]])
+    else:
+        raise ValueError("Unsupported crystal structure. Options are 'cubic' and 'hexagonal'.")
+    return C
+        
+
+
 def test_bandpass(img, save_dir="./"):
     """Run bandpass filtering (using difference of gaussians) on an image.
     Do it for a range of lower and upper sigma values.
     Do vertical and horizontal stacking of the results to create on image (vertical axis is the high pass, horizontal is the low pass).
     For each image, also compute the fft and create the same composite image.
-    
+
     Args:
         img (np.ndarray): The image to filter."""
     # Process inputs
@@ -367,7 +412,7 @@ def test_bandpass(img, save_dir="./"):
             xcf = signal.correlate2d(image, image, mode='same')
             composite_xcf_eq[i*img.shape[0]:(i+1)*img.shape[0], j*img.shape[1]:(j+1)*img.shape[1]] = xcf
             sigmas[i, j] = (l, h)
-    
+
     # Now plot the two composite images using matplotlib with the sigmas as ticklabels
     fig, ax = plt.subplots(2, 2, figsize=(20, 20))
     ax[0, 0].imshow(composite, cmap='gray')
@@ -409,7 +454,6 @@ def test_bandpass(img, save_dir="./"):
     fig.tight_layout()
     fig.savefig(save_dir + "bandpass_test.png")
     plt.close(fig)
-    return composite, composite_xcf
 
 
 def view(*imgs, cmap='gray', titles=None, save_dir=None):
@@ -431,29 +475,47 @@ def view(*imgs, cmap='gray', titles=None, save_dir=None):
         plt.show()
 
 
-def view_tensor_images(e, cmap="jet", tensor_type="strain", xy=None, save_dir=None, save_name=""):
+def view_tensor_images(e, cmap="jet", tensor_type="strain", xy=None, save_dir=None, save_name="", show="all"):
     """View individual tensor components of a grid of tensors (such as the strain tensor from HREBSD).
-    
+
     Args:
         e (np.ndarray): The tensor components. (H, W, 3, 3)
         cmap (str): The colormap to use.
         tensor_type (str): The type of tensor. Options are "strain", "rotation", and "deformation".
         xy (tuple): The point to plot on the tensor components.
         save_dir (str): The directory to save the image.
-        save_name (str): The name of the image. The filename will be save_name + tensor_type + ".png"."""
+        save_name (str): The name of the image. The filename will be save_name + tensor_type + ".png".
+        show (str): The tensor components to show. Options are "all", "diag", "upper", or "lower"."""
+    # Process tensor type
     if tensor_type == "strain":
         var = r"$\epsilon$"
     elif tensor_type == "rotation":
         var = r"$\omega$"
     elif tensor_type == "deformation":
         var = r"$F$"
+    elif tensor_type == "stress":
+        var = r"$\sigma$"
+    # Process show
+    if show == "all":
+        bad = []
+    elif show == "diag":
+        bad = ["01", "02", "10", "12", "20", "21"]
+    elif show == "upper":
+        bad = ["10", "20", "21"]
+    elif show == "lower":
+        bad = ["01", "02", "12"]
     fig, ax = plt.subplots(3, 3, figsize=(12.2, 12))
     plt.subplots_adjust(wspace=0.35, hspace=0.01, left=0.01, right=0.93, top=0.99, bottom=0.01)
     for i in range(3):
         for j in range(3):
-            _0 = ax[i, j].imshow(e[..., i, j], cmap=cmap, vmin=-abs(e[..., i, j]).max(), vmax=abs(e[..., i, j]).max())
+            if "%i%i" % (i, j) in bad:
+                # Turn off the axis
+                ax[i, j].axis('off')
+                continue
+            vmin, vmax = np.percentile(e[..., i, j], [1, 99])
+            _0 = ax[i, j].imshow(e[..., i, j], cmap=cmap, vmin=vmin, vmax=vmax)
             ax[i, j].axis('off')
-            ax[i, j].set_title(var + r"$_{%i%i}$" % (i+1, j+1))
+            ax[i, j].set_title(var + r"$_{%i%i}$" % (i+1, j+1), fontsize=20)
             if xy is not None:
                 ax[i, j].plot(xy[1], xy[0], 'kx', markersize=10)
             loc = ax[i, j].get_position()
@@ -461,6 +523,36 @@ def view_tensor_images(e, cmap="jet", tensor_type="strain", xy=None, save_dir=No
             cbar = fig.colorbar(_0, cax=cax, orientation='vertical')
             cbar.formatter.set_powerlimits((-1, 1))
     if save_dir is not None:
-        plt.savefig(os.path.join(save_dir, f"{save_name}{tensor_type}.png"), dpi=300)
+        plt.savefig(os.path.join(save_dir, f"{save_name}{tensor_type}.png"), dpi=300, transparent=True)
         plt.close(fig)
     plt.show()
+
+
+def shade_ipf(ipf, greyscale):
+    # Process greyscale
+    greyscale = greyscale.astype(np.float32)
+    greyscale = ((greyscale - greyscale.min()) / (greyscale.max() - greyscale.min())).reshape(greyscale.shape + (1,))
+
+    # Shade the IPF
+    ipf = ipf.astype(np.float32)
+    ipf = ipf * greyscale
+    return ipf
+
+
+def make_video(folder, save_path):
+    import cv2
+    import os
+
+    prefix = "img"
+    ext = ".png"
+    fps = 24
+
+    fourcc = cv2.VideoWriter_fourcc(*"h264")
+    images = sorted([img for img in os.listdir(folder) if img.endswith(ext) and img[:len(prefix)] == prefix], key=lambda x: int(x.split(".")[0].replace(prefix, "")))
+    frame = cv2.imread(os.path.join(folder, images[0]))
+    h, w, l = frame.shape
+    video = cv2.VideoWriter(save_path, fourcc, fps, (w, h))
+    for i, image in enumerate(images):
+        video.write(cv2.imread(os.path.join(folder, image)))
+    cv2.destroyAllWindows()
+    video.release()
