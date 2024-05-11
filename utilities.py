@@ -26,24 +26,26 @@ def convert_pc(PC: tuple | list | np.ndarray, N: tuple, delta: float, b: float =
     (xstar, ystar, zstar) -> (xpc, ypc, L)
 
     Args:
-        PC (array-like): (xstar, ystar, zstar)
-        N (array-like): detector dimensions before binning (Nx, Ny)
-        delta: float, the detector pixel size
-        b: float, some constant that is 1
+        PC (array-like): (xstar, ystar, zstar) --OR-- (xpc, ypc, L). If the latter is given, the L parameter needs to be in units of pixels.
+        N (array-like): detector dimensions after binning, aka the pattern dimensions (Nx, Ny)
+        delta (float): the raw detector pixel size before binning
+        b (float): the binning factor
 
     Returns:
-        PC (tuple): The pattern center (xpc, ypc, L)"""
+        PC (tuple): The pattern center (xpc, ypc, L) all in units of pixels.
+        --OR--
+        PC (tuple): The pattern center (xstar, ystar, zstar)."""
     if in_format == "edax" and out_format == "std":
-        xpc = np.around(N[0] * (PC[0] - 0.5), 4)
-        ypc = np.around(N[0] * PC[1] - b * N[1] * 0.5, 4)
-        # L = np.around(N[0] * delta * PC[2], 4)
-        L = np.around(N[0] * PC[2], 4)  # We don't multiply by delta here because we want dimensions to be in pixels
+        xpc = np.around(N[0] * (PC[0] - 0.5), 3)
+        ypc = np.around(N[0] * PC[1] - N[1] * 0.5, 3)
+        # L = np.around(PC[2] * N[0] * b * delta, 3)
+        L = np.around(PC[2] * N[0] * b, 3)
         pc = (xpc, ypc, L)
     elif in_format == "std" and out_format == "edax":
-        xstar = np.around(PC[0] / N[0] + 0.5, 4)
-        ystar = np.around((PC[1] + b * N[1] * 0.5) / N[0], 4)
-        # L = np.around(PC[2] / (N[0] * delta), 4)
-        zstar = np.around(PC[2] / N[0], 4)
+        xstar = np.around(PC[0] / N[0] + 0.5, 3)
+        ystar = np.around((PC[1] + N[1] * 0.5) / N[0], 3)
+        zstar = np.around(PC[2] / (N[0] * b), 3)
+        # zstar = np.around(PC[2] / (N[0] * delta * b), 3)
         pc = (xstar, ystar, zstar)
     else:
         raise ValueError("Unsupported format. Options are 'edax' and 'std'.")
@@ -83,7 +85,7 @@ def read_up2(up2: str) -> namedtuple:
     return out
 
 
-def read_ang(path: str, Nxy: tuple, pixel_size: float = 10.0) -> namedtuple:
+def read_ang(path: str, Nxy: tuple, pixel_size: float, b: float | int) -> namedtuple:
     """Reads in the pattern center from an ang file.
     Only supports EDAX/TSL.
 
@@ -95,6 +97,7 @@ def read_ang(path: str, Nxy: tuple, pixel_size: float = 10.0) -> namedtuple:
         ang (str): Path to the ang file.
         Nxy (tuple): The detector dimensions before binning. Used for converting the pattern center.
         pixel_size (float): The detector pixel size. Used for converting the pattern center.
+        b (float | int): The binning factor.
 
     Returns:
         namedtuple: The data read in from the ang file with the following fields:
@@ -124,7 +127,7 @@ def read_ang(path: str, Nxy: tuple, pixel_size: float = 10.0) -> namedtuple:
             header_lines += 1
 
     # Package the header data
-    PC = convert_pc((xstar, ystar, zstar), Nxy, pixel_size)
+    PC = convert_pc((xstar, ystar, zstar), Nxy, pixel_size, b)
     shape = (rows, cols)
     names.extend(["eulers", "quats", "shape", "pc", "pidx"])
     names = [name.replace(" ", "_").lower() for name in names if name.lower() not in ["phi1", "phi", "phi2"]]
@@ -143,7 +146,7 @@ def read_ang(path: str, Nxy: tuple, pixel_size: float = 10.0) -> namedtuple:
     return out
 
 
-def get_scan_data(up2: str, ang: str, Nxy: tuple, pixel_size: float = 10.0) -> tuple:
+def get_scan_data(up2: str, ang: str, Nxy: tuple, pixel_size: float, b: float | int) -> tuple:
     """Reads in patterns and orientations from an ang file and a pattern file.
     Only supports EDAX/TSL.
     
@@ -152,23 +155,23 @@ def get_scan_data(up2: str, ang: str, Nxy: tuple, pixel_size: float = 10.0) -> t
         ang (str): Path to the ang file.
         Nxy (tuple): The detector dimensions before binning. Used for converting the pattern center.
         pixel_size (float): The detector pixel size. Used for converting the pattern center.
+        b (float | int): The binning factor.
 
     Returns:
         np.ndarray: The patterns.
-        namedtuple: The orientations. namedtuple with fields corresponding to the columns in the ang file + eulers, quats, shape, pc.
-                    Sharpness replaces image quality (iq) if calculate_sharpness is True."""
+        namedtuple: The orientations. namedtuple with fields corresponding to the columns in the ang file + eulers, quats, shape, pc."""
     # Get the patterns
     pat_obj = read_up2(up2)
 
     # Get the ang data
-    ang_data = read_ang(ang, Nxy, pixel_size)
+    ang_data = read_ang(ang, Nxy, pixel_size, b)
 
     return pat_obj, ang_data
 
 
 def get_patterns(pat_obj: namedtuple, idx: np.ndarray | list | tuple = None) -> tuple:
     """Read in patterns from a pattern file object.
-    
+
     Args:
         pat_obj (namedtuple): Pattern file object.
         idx (np.ndarray | list | tuple): Indices of patterns to read in. If None, reads in all patterns.
@@ -179,15 +182,14 @@ def get_patterns(pat_obj: namedtuple, idx: np.ndarray | list | tuple = None) -> 
     if idx is None:
         idx = range(pat_obj.nPatterns)
         reshape = False
-    elif isinstance(idx, np.ndarray):
+    else:
+        idx = np.asarray(idx)
         reshape = False
         if idx.ndim >= 2:
             reshape = True
             out_shape = idx.shape + pat_obj.patshape
             idx = idx.flatten()
-    else:
-        reshape = False
-
+    print(idx)
     # Read in the patterns
     start_byte = np.int64(16)
     pattern_bytes = np.int64(pat_obj.patshape[0] * pat_obj.patshape[1] * 2)
@@ -207,7 +209,7 @@ def get_patterns(pat_obj: namedtuple, idx: np.ndarray | list | tuple = None) -> 
 
 def get_sharpness(imgs: np.ndarray) -> np.ndarray:
     """Calculates the sharpness of an image/stack of images.
-    
+
     Args:
         imgs (np.ndarray): The images to calculate the sharpness of. (H, W) or (N, H, W) or (N0, N1, H, W)
 
@@ -249,7 +251,7 @@ def get_sharpness(imgs: np.ndarray) -> np.ndarray:
 
 def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple = None, batch_size: int = 8) -> np.ndarray:
     """Cleans patterns by equalizing the histogram and normalizing.
-    
+
     Args:
         pats (np.ndarray): The patterns to clean. (N, H, W)
         equalize (bool): Whether to equalize the histogram.
@@ -283,12 +285,11 @@ def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple 
     
     # Create processing functions
     def make_odd(x):
-        return  x if x % 2 == 1 else x + 1
+        return x if x % 2 == 1 else x + 1
 
     # Process the patterns, using batches
-    imgs_batched = torch.split(imgs, batch_size, dim=0)
-    print(imgs.shape, len(imgs_batched), imgs_batched[0].shape, imgs_batched[-1].shape)
-    for i in tqdm(range(imgs_batched.shape[0]), desc='Processing patterns', unit='pats'):
+    imgs_batched = list(torch.split(imgs, batch_size, dim=0))
+    for i in tqdm(range(len(imgs_batched)), desc='Processing patterns', unit='batches'):
         imgs = kornia.enhance.normalize_min_max(imgs_batched[i], 0.0, 1.0)
         if bandpass:
             kl = make_odd(int(dog_sigmas[0] * 3))
@@ -301,12 +302,14 @@ def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple 
             imgs = kornia.enhance.normalize_min_max(imgs, 0.0, 1.0)
         
         imgs_batched[i] = imgs
-    imgs = torch.cat(imgs_batched, dim=0)
-    print(imgs.shape)
+    if len(imgs_batched) > 1:
+        imgs = torch.cat(imgs_batched, dim=0)
+    else:
+        imgs = imgs_batched[0]
 
     # Normalize
     out = imgs.cpu().numpy()
-    out = out.reshape(-1, out.shape[3], out.shape[4])
+    out = out.reshape(-1, out.shape[2], out.shape[3])
     if reshape is not None:
         out = out.reshape(reshape + out.shape[1:])
 
@@ -371,10 +374,9 @@ def get_stiffness_tensor(*C, structure) -> np.ndarray:
     else:
         raise ValueError("Unsupported crystal structure. Options are 'cubic' and 'hexagonal'.")
     return C
-        
 
 
-def test_bandpass(img, save_dir="./"):
+def test_bandpass(img, save_dir="./", window_size=128):
     """Run bandpass filtering (using difference of gaussians) on an image.
     Do it for a range of lower and upper sigma values.
     Do vertical and horizontal stacking of the results to create on image (vertical axis is the high pass, horizontal is the low pass).
@@ -384,10 +386,11 @@ def test_bandpass(img, save_dir="./"):
         img (np.ndarray): The image to filter."""
     # Process inputs
     c = np.array(img.shape) // 2
-    slc = (slice(c[0] - 64, c[0] + 64), slice(c[1] - 64, c[1] + 64))
+    slc = (slice(c[0] - window_size // 2, c[0] + window_size // 2),
+           slice(c[1] - window_size // 2, c[1] + window_size // 2))
     img = img[slc]
     low_sigmas = np.arange(0.25, 2.0, 0.25)  # high pass
-    high_sigmas = np.arange(4.0, 11.0, 1.0)  # low pass
+    high_sigmas = np.arange(5.0, 40.0, 5.0)  # low pass
     composite = np.zeros((len(low_sigmas) * img.shape[0], len(high_sigmas) * img.shape[1]))
     composite_eq = np.zeros((len(low_sigmas) * img.shape[0], len(high_sigmas) * img.shape[1]))
     composite_xcf = np.zeros((len(low_sigmas) * img.shape[0], len(high_sigmas) * img.shape[1]))
@@ -403,13 +406,13 @@ def test_bandpass(img, save_dir="./"):
             image = image * window
             composite[i*img.shape[0]:(i+1)*img.shape[0], j*img.shape[1]:(j+1)*img.shape[1]] = image
             # Compute the cross-correlation
-            xcf = signal.correlate2d(image, image, mode='same')
+            xcf = signal.fftconvolve(image, image[::-1, ::-1], mode='same').real
             composite_xcf[i*img.shape[0]:(i+1)*img.shape[0], j*img.shape[1]:(j+1)*img.shape[1]] = xcf
             # Equalize the histogram
             image = exposure.equalize_adapthist(image)
             composite_eq[i*img.shape[0]:(i+1)*img.shape[0], j*img.shape[1]:(j+1)*img.shape[1]] = image
             # Compute the cross-correlation
-            xcf = signal.correlate2d(image, image, mode='same')
+            xcf = signal.fftconvolve(image, image[::-1, ::-1], mode='same').real
             composite_xcf_eq[i*img.shape[0]:(i+1)*img.shape[0], j*img.shape[1]:(j+1)*img.shape[1]] = xcf
             sigmas[i, j] = (l, h)
 
@@ -495,6 +498,8 @@ def view_tensor_images(e, cmap="jet", tensor_type="strain", xy=None, save_dir=No
         var = r"$F$"
     elif tensor_type == "stress":
         var = r"$\sigma$"
+    elif tensor_type == "homography":
+        var = r"$h$"
     # Process show
     if show == "all":
         bad = []
@@ -512,8 +517,15 @@ def view_tensor_images(e, cmap="jet", tensor_type="strain", xy=None, save_dir=No
                 # Turn off the axis
                 ax[i, j].axis('off')
                 continue
+            elif tensor_type == "homography":
+                if i == 2 and j == 2:
+                    ax[i, j].axis('off')
+                    continue
             vmin, vmax = np.percentile(e[..., i, j], [1, 99])
-            _0 = ax[i, j].imshow(e[..., i, j], cmap=cmap, vmin=vmin, vmax=vmax)
+            if tensor_type == "homography":
+                _0 = ax[i, j].imshow(e[..., 3*i + j], cmap=cmap, vmin=vmin, vmax=vmax)
+            else:
+                _0 = ax[i, j].imshow(e[..., i, j], cmap=cmap, vmin=vmin, vmax=vmax)
             ax[i, j].axis('off')
             ax[i, j].set_title(var + r"$_{%i%i}$" % (i+1, j+1), fontsize=20)
             if xy is not None:
