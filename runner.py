@@ -24,6 +24,8 @@ if __name__ == "__main__":
     pat_obj, ang_data = utilities.get_scan_data(up2, ang, Nxy, pixel_size, b)
     PC = ang_data.pc
     print(PC)
+    print(pat_obj.patshape)
+    exit()
 
     # # Get patterns
     # # idx = utilities.get_index(point, size, ang_data)

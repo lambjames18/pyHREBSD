@@ -7,7 +7,7 @@ import struct
 from collections import namedtuple
 
 import numpy as np
-from scipy import signal
+from scipy import signal, ndimage
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 from skimage import exposure, filters
@@ -20,7 +20,7 @@ import rotations
 NUMERIC = r"[-+]?\d*\.\d+|\d+"
 
 
-def convert_pc(PC: tuple | list | np.ndarray, N: tuple, delta: float, b: float = 1.0, in_format="edax", out_format="std") -> tuple:
+def convert_pc(PC: tuple | list | np.ndarray, patshape: tuple | list | np.ndarray) -> tuple:
     """
     Converts the pattern center from EDAX/TSL standard to the EMsoft standard
     (xstar, ystar, zstar) -> (xpc, ypc, L)
@@ -35,21 +35,10 @@ def convert_pc(PC: tuple | list | np.ndarray, N: tuple, delta: float, b: float =
         PC (tuple): The pattern center (xpc, ypc, L) all in units of pixels.
         --OR--
         PC (tuple): The pattern center (xstar, ystar, zstar)."""
-    if in_format == "edax" and out_format == "std":
-        xpc = np.around(N[0] * (PC[0] - 0.5), 3)
-        ypc = np.around(N[0] * PC[1] - N[1] * 0.5, 3)
-        # L = np.around(PC[2] * N[0] * b * delta, 3)
-        L = np.around(PC[2] * N[0] * b, 3)
-        pc = (xpc, ypc, L)
-    elif in_format == "std" and out_format == "edax":
-        xstar = np.around(PC[0] / N[0] + 0.5, 3)
-        ystar = np.around((PC[1] + N[1] * 0.5) / N[0], 3)
-        zstar = np.around(PC[2] / (N[0] * b), 3)
-        # zstar = np.around(PC[2] / (N[0] * delta * b), 3)
-        pc = (xstar, ystar, zstar)
-    else:
-        raise ValueError("Unsupported format. Options are 'edax' and 'std'.")
-    return pc
+    xpc = PC[0] * patshape[1]
+    ypc = PC[1] * patshape[0]
+    DD = PC[2] * patshape[0]
+    return (xpc, ypc, DD)
 
 
 def read_up2(up2: str) -> namedtuple:
@@ -85,7 +74,7 @@ def read_up2(up2: str) -> namedtuple:
     return out
 
 
-def read_ang(path: str, Nxy: tuple, pixel_size: float, b: float | int) -> namedtuple:
+def read_ang(path: str, patshape: tuple | list | np.ndarray) -> namedtuple:
     """Reads in the pattern center from an ang file.
     Only supports EDAX/TSL.
 
@@ -95,9 +84,7 @@ def read_ang(path: str, Nxy: tuple, pixel_size: float, b: float | int) -> namedt
 
     Args:
         ang (str): Path to the ang file.
-        Nxy (tuple): The detector dimensions before binning. Used for converting the pattern center.
-        pixel_size (float): The detector pixel size. Used for converting the pattern center.
-        b (float | int): The binning factor.
+        patshape (tuple): The shape of the patterns.
 
     Returns:
         namedtuple: The data read in from the ang file with the following fields:
@@ -127,7 +114,7 @@ def read_ang(path: str, Nxy: tuple, pixel_size: float, b: float | int) -> namedt
             header_lines += 1
 
     # Package the header data
-    PC = convert_pc((xstar, ystar, zstar), Nxy, pixel_size, b)
+    PC = convert_pc((xstar, ystar, zstar), patshape)
     shape = (rows, cols)
     names.extend(["eulers", "quats", "shape", "pc", "pidx"])
     names = [name.replace(" ", "_").lower() for name in names if name.lower() not in ["phi1", "phi", "phi2"]]
@@ -146,16 +133,13 @@ def read_ang(path: str, Nxy: tuple, pixel_size: float, b: float | int) -> namedt
     return out
 
 
-def get_scan_data(up2: str, ang: str, Nxy: tuple, pixel_size: float, b: float | int) -> tuple:
+def get_scan_data(up2: str, ang: str) -> tuple:
     """Reads in patterns and orientations from an ang file and a pattern file.
     Only supports EDAX/TSL.
     
     Args:
         up2 (str): Path to the pattern file.
         ang (str): Path to the ang file.
-        Nxy (tuple): The detector dimensions before binning. Used for converting the pattern center.
-        pixel_size (float): The detector pixel size. Used for converting the pattern center.
-        b (float | int): The binning factor.
 
     Returns:
         np.ndarray: The patterns.
@@ -164,7 +148,7 @@ def get_scan_data(up2: str, ang: str, Nxy: tuple, pixel_size: float, b: float | 
     pat_obj = read_up2(up2)
 
     # Get the ang data
-    ang_data = read_ang(ang, Nxy, pixel_size, b)
+    ang_data = read_ang(ang, pat_obj.patshape)
 
     return pat_obj, ang_data
 
@@ -249,13 +233,15 @@ def get_sharpness(imgs: np.ndarray) -> np.ndarray:
     return shp
 
 
-def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple = None, batch_size: int = 8) -> np.ndarray:
+def process_patterns(imgs: np.ndarray, blur: bool = True, equalize: bool = True, truncate: bool = True, batch_size: int = 8) -> np.ndarray:
     """Cleans patterns by equalizing the histogram and normalizing.
 
     Args:
         pats (np.ndarray): The patterns to clean. (N, H, W)
         equalize (bool): Whether to equalize the histogram.
-        dog_sigmas (tuple): The sigmas for the difference of Gaussians filter. If None, no bandpass filtering is done.
+        high_pass (bool): Whether to apply a high-pass filter.
+        truncate (bool): Whether to truncate the patterns.
+        batch_size (int): The batch size for processing the patterns.
 
     Returns:
         np.ndarray: The cleaned patterns. (N, H, W)"""
@@ -269,20 +255,17 @@ def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple 
         reshape = imgs.shape[:2]
         imgs = imgs.reshape(-1, *imgs.shape[2:])
     imgs = imgs.astype(np.float32).reshape(imgs.shape[0], 1, imgs.shape[1], imgs.shape[2])
-    if dog_sigmas is None:
-        bandpass = False
-    else:
-        bandpass = True
+    if truncate:
+        imgs[imgs < np.percentile(imgs, 1)] = np.percentile(imgs, 50)
+        imgs[imgs > np.percentile(imgs, 99)] = np.percentile(imgs, 50)
+    background = ndimage.gaussian_filter(imgs.mean(axis=0), 5)
+    imgs = imgs - background
+    imgs = (imgs - imgs.min(axis=(1,2))[:,None,None]) / (imgs.max(axis=(1,2)) - imgs.min(axis=(1,2)))[:,None,None]
 
     # Convert to torch tensor, set device, create output tensor
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     imgs = torch.tensor(imgs, dtype=torch.float32).to(device)
 
-    # Subtract the background
-    # avg = imgs.mean(dim=(0), keepdim=True)
-    # background = kornia.filters.gaussian_blur2d(avg, (3, 3), (10.0, 10.0))
-    # imgs = imgs - background
-    
     # Create processing functions
     def make_odd(x):
         return x if x % 2 == 1 else x + 1
@@ -291,16 +274,13 @@ def process_patterns(imgs: np.ndarray, equalize: bool = True, dog_sigmas: tuple 
     imgs_batched = list(torch.split(imgs, batch_size, dim=0))
     for i in tqdm(range(len(imgs_batched)), desc='Processing patterns', unit='batches'):
         imgs = kornia.enhance.normalize_min_max(imgs_batched[i], 0.0, 1.0)
-        if bandpass:
-            kl = make_odd(int(dog_sigmas[0] * 3))
-            kh = make_odd(int(dog_sigmas[1] * 3))
-            low_pass = kornia.filters.gaussian_blur2d(imgs, (kl, kl), (dog_sigmas[0], dog_sigmas[0]))
-            high_pass = kornia.filters.gaussian_blur2d(imgs, (kh, kh), (dog_sigmas[1], dog_sigmas[1]))
-            imgs = kornia.enhance.normalize_min_max(low_pass - high_pass, 0.0, 1.0)
+        if blur:
+            imgs = kornia.filters.gaussian_blur2d(imgs, (3, 3), (1.0, 1.0))
+            imgs = kornia.enhance.normalize_min_max(imgs, 0.0, 1.0)
         if equalize:
             imgs = kornia.enhance.equalize_clahe(imgs)
             imgs = kornia.enhance.normalize_min_max(imgs, 0.0, 1.0)
-        
+
         imgs_batched[i] = imgs
     if len(imgs_batched) > 1:
         imgs = torch.cat(imgs_batched, dim=0)

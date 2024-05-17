@@ -36,21 +36,17 @@ def correct_geometry(H, PC, delPC) -> np.ndarray:
     return h
 
 
-def normalize(img, return_zmsv=False) -> np.ndarray:
+def normalize(img):
     """Zero-mean normalize an image with unit standard deviation.
-
+    Note that the standard deviation is multiplied by the number of pixels minus one.
     Args:
         img (np.ndarray): The image to normalize.
-
     Returns:
         np.ndarray: The normalized image."""
     # img = (img - img.min()) / (img.max() - img.min())
-    mean = img.mean()
-    zmsv = (img - mean).std() * np.sqrt(img.size - 1)
-    if return_zmsv:
-        return (img - mean) / zmsv, zmsv
-    else:
-        return (img - mean) / zmsv
+    img_bar = img.mean()
+    dimg_tilde = np.sqrt(((img - img_bar)**2).sum())
+    return (img - img_bar) / dimg_tilde
 
 
 def jacobian(xi) -> np.ndarray:
@@ -63,7 +59,7 @@ def jacobian(xi) -> np.ndarray:
         np.ndarray: The jacobian of the shape function. Shape is (2, 8, N)."""
     _1 = np.ones(xi.shape[1])
     _0 = np.zeros(xi.shape[1])
-    out0 = np.array([[xi[0], xi[1],   _1,    _0,    _0,   _0,    -xi[0]**2, -xi[0]*xi[1]]])
+    out0 = np.array([[xi[0], xi[1],   _1,    _0,    _0,   _0,    -xi[0]**2, -xi[1]*xi[0]]])
     out1 = np.array([[   _0,    _0,   _0, xi[0], xi[1],   _1, -xi[0]*xi[1],    -xi[1]**2]])
     return np.vstack((out0, out1))
 
@@ -81,27 +77,20 @@ def reference_precompute(R, subset_slice, PC) -> tuple:
         np.ndarray: The subset's intensity gradients.
         np.ndarray: The subset's Hessian matrix.
         np.ndarray: The subset's coordinates."""
-    # Compute the subset's intensities. They are zero mean normalized.
-    r = normalize(R)[subset_slice].flatten()
-
     # Get coordinates
-    ii = np.arange(R.shape[0]) - (R.shape[0] / 2 + PC[1])
-    jj = np.arange(R.shape[1]) - (R.shape[1] / 2 + PC[0])
-    II, JJ = np.meshgrid(ii, jj, indexing="ij")
-    xi = np.array([II[subset_slice].flatten(), JJ[subset_slice].flatten()])
+    x = np.arange(R.shape[1]) - PC[0]
+    y = np.arange(R.shape[0]) - PC[1]
+    X, Y = np.meshgrid(x, y)
+    xi = np.array([Y[subset_slice].flatten(), X[subset_slice].flatten()])
 
     # Compute the intensity gradients of the subset
-    spline = interpolate.RectBivariateSpline(ii, jj, R, kx=5, ky=5)
-    GRy = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
-    GRx = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
+    spline = interpolate.RectBivariateSpline(x, y, R, kx=5, ky=5)
+    GRx = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
+    GRy = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
     GR = np.vstack((GRx, GRy)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
     r = spline(xi[0], xi[1], grid=False).flatten()
     r_zmsv = np.sqrt(((r - r.mean())**2).sum())
     r = (r - r.mean()) / r_zmsv
-
-    # Get the reference intensities
-    # r = spline(xi[0], xi[1], grid=False)
-    # r = normalize(r)
 
     # Compute the jacobian of the shape function
     Jac = jacobian(xi)  # 2x8xN
@@ -111,11 +100,11 @@ def reference_precompute(R, subset_slice, PC) -> tuple:
 
     # Compute the Hessian
     H = 2 / r_zmsv**2 * NablaR_dot_Jac.dot(NablaR_dot_Jac.T)
-
+    
     return r, r_zmsv, NablaR_dot_Jac, H, xi
 
 
-def target_precompute(T: np.ndarray, PC: np.ndarray = None) -> interpolate.RectBivariateSpline:
+def target_precompute(T: np.ndarray, PC: np.ndarray) -> interpolate.RectBivariateSpline:
     """Precompute arrays/values for the target subset for the IC-GN algorithm.
 
     Args:
@@ -125,14 +114,11 @@ def target_precompute(T: np.ndarray, PC: np.ndarray = None) -> interpolate.RectB
     Returns:
         interpolate.RectBivariateSpline: The biquintic B-spline of the target subset."""
     # Get coordinates
-    if PC is None:
-        PC = np.array([0.0, 0.0])
-    ii = np.arange(T.shape[0]) - (T.shape[0] / 2 + PC[1])
-    jj = np.arange(T.shape[1]) - (T.shape[1] / 2 + PC[0])
+    x = np.arange(T.shape[1]) - PC[0]
+    y = np.arange(T.shape[0]) - PC[1]
 
     # Compute the intensity gradients of the subset
-    # T_spline = interpolate.RectBivariateSpline(ii, jj, normalize(T), kx=5, ky=5)
-    T_spline = interpolate.RectBivariateSpline(ii, jj, T, kx=5, ky=5)
+    T_spline = interpolate.RectBivariateSpline(x, y, normalize(T), kx=5, ky=5)
 
     return T_spline
 
@@ -147,18 +133,22 @@ def get_xi_prime(xi, p) -> np.ndarray:
     Returns:
         np.ndarray: The deformed subset coordinates. Shape is (2, N)."""
     Wp = W(p)
-    xi_3d = np.vstack((xi[::-1], np.ones(xi.shape[1])))
+    xi_3d = np.vstack((xi, np.ones(xi.shape[1])))
     xi_prime = Wp.dot(xi_3d)
-    return (xi_prime[:2] / xi_prime[2])[::-1]
+    return xi_prime[:2] / xi_prime[2]
 
 
-def IC_GN(idx, p, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-5, max_iter=50) -> np.ndarray:
+def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter=50) -> np.ndarray:
     # Precompute the target subset
     T_spline = target_precompute(T, PC)
 
+    p = p0.copy()
+
     # Run the iterations
     num_iter = 0
-    while True:
+    updates = []
+    residuals = []
+    while num_iter < max_iter:
         # Warp the target subset
         num_iter += 1
         t_deformed = deform(xi, T_spline, p)
@@ -166,6 +156,7 @@ def IC_GN(idx, p, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-5, max_
 
         # Compute the residuals
         e = r - t_deformed
+        residuals.append(np.abs(e).mean())
 
         # Copmute the gradient of the correlation criterion
         dC_IC_ZNSSD = 2 / dr_tilde * np.matmul(e, NablaR_dot_Jac.T)  # 8x1
@@ -174,25 +165,41 @@ def IC_GN(idx, p, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-5, max_
         c, lower = linalg.cho_factor(H)
         dp = linalg.cho_solve((c, lower), -dC_IC_ZNSSD.reshape(-1, 1))[:, 0]
 
-        # Update the homography
+        # Update the parameters
         norm = dp_norm(dp, xi)
         Wp = W(p)
         Wp = Wp.dot(np.linalg.inv(W(dp)))
+
         Wp = Wp / Wp[2, 2]
         p = np.array([Wp[0, 0] - 1, Wp[0, 1], Wp[0, 2],
-                      Wp[1, 0], Wp[1, 1] - 1, Wp[1, 2],
-                      Wp[2, 0], Wp[2, 1]]).copy()
+                    Wp[1, 0], Wp[1, 1] - 1, Wp[1, 2],
+                    Wp[2, 0], Wp[2, 1]])
+
+        # Store the update
+        updates.append(norm)
 
         # Check for convergence
-        if norm < conv_tol or num_iter == max_iter:
+        print(f"Iteration {num_iter}: E = {residuals[-1]:.2e}, Norm = {norm}, ({dp[0]:.2e}, {dp[1]:.2e}, {dp[2]:.2e}, {dp[3]:.2e}, {dp[4]:.2e}, {dp[5]:.2e}, {dp[6]:.2e}, {dp[7]:.2e})")
+        if norm < conv_tol:
             break
 
+    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    ax[0].imshow(e.reshape(np.sqrt(e.size).astype(int), np.sqrt(e.size).astype(int)))
+    ax[0].set_title("Final residuals")
+    ax[1].plot(residuals)
+    ax[1].set_title("Residuals over iterations")
+    axt = ax[1].twinx()
+    axt.plot(updates, color='red')
+    axt.set_ylabel("Update norm")
+    plt.tight_layout()
+    plt.savefig("IC-GN_{}.png".format(time.time()))
+    
     if num_iter == max_iter:
         print(f"Warning: Maximum number of iterations reached!")
-    return p
+    return p, max_iter, residuals[-1]
 
 
-def get_homography(R, T, subset_slice=None, conv_tol=1e-5, max_iter=50, p0=None, PC=None, parallel=True) -> np.ndarray:
+def get_homography(R, T, PC, subset_slice=None, conv_tol=1e-5, max_iter=50, p0=None, parallel=True) -> np.ndarray:
     """Run the inverse compositional Gauss-Newton algorithm on a set of EBSD patterns.
 
     Args:
@@ -243,24 +250,27 @@ def get_homography(R, T, subset_slice=None, conv_tol=1e-5, max_iter=50, p0=None,
 
     # Precompute values for the reference subset
     r, dr_tilde, NablaR_dot_Jac, H, xi = reference_precompute(R, subset_slice, PC)
-    p_out = np.zeros_like(p0)
 
     # Start loop over targets
     if parallel:
-        args = [(i, p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter) for i in range(T.shape[0])]
+        args = [(p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter) for i in range(T.shape[0])]
         pbar_options={'desc': 'IC-GN optimization', 'unit': 'targets'}
         with mpire.WorkerPool(n_jobs=mpire.cpu_count() // 2) as pool:
             p_out = pool.map(IC_GN, args, progress_bar=True, progress_bar_options=pbar_options)
+        p_out = np.squeeze(p_out.reshape(out_shape + (8,)))
     else:
+        # p_out = np.zeros_like(p0)
+        p_out = []
         for i in tqdm(range(T.shape[0]), desc="IC-GN optimization", unit="targets"):
-            p_out[i] = IC_GN(p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter)
-
-    # Reshape to match the input
-    p_out = np.squeeze(p_out.reshape(out_shape + (8,)))
+            # p_out[i] = IC_GN(p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter)
+            p_out.append(IC_GN(p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter))
+        iter_count = np.squeeze(np.array([i[1] for i in p_out]).reshape(out_shape + (1,)))
+        residuals = np.squeeze(np.array([i[2] for i in p_out]).reshape(out_shape + (1,)))
+        p_out = np.squeeze(np.array([i[0] for i in p_out]).reshape(out_shape + (8,)))
 
     # Apply a tolerance
     p_out[np.abs(p_out) < 1e-9] = 0
-    return p_out
+    return p_out, iter_count, residuals
 
 
 def homography_to_elastic_deformation(H, PC):
@@ -436,7 +446,7 @@ def dp_norm(dp, xi) -> float:
     return out
 
 
-def shift_to_homography_partial(x: float | np.ndarray, y: float | np.ndarray, theta: float | np.ndarray):
+def shift_to_homography_partial(measurements: np.ndarray):
     """Convert a translation and rotation to a homography.
 
     Args:
@@ -446,6 +456,7 @@ def shift_to_homography_partial(x: float | np.ndarray, y: float | np.ndarray, th
 
     Returns:
         np.ndarray: The homography parameters. Shape is (8,) if scalars provided. Shape is (..., 8) if arrays provided."""
+    x, y, theta = measurements[..., 0], measurements[..., 1], measurements[..., 2]
     if all(isinstance(i, (int, float)) for i in (x, y, theta)):
         return np.array([np.cos(theta) - 1, -np.sin(theta), x*np.cos(theta) - y*np.sin(theta),
                          np.sin(theta), np.cos(theta) - 1, x*np.sin(theta) + y*np.cos(theta),
@@ -522,7 +533,7 @@ def shift_to_homography(shifts: np.ndarray, PC: tuple | list | np.ndarray, tilt:
     # h23 = g23 / g0
     h31 = m31 / g0
     h32 = m32 / g0
-    homographies = shift_to_homography_partial(x, y, theta)
+    homographies = shift_to_homography_partial(shifts)
     homographies[..., 6] = h31
     homographies[..., 7] = h32
     # homographies = np.squeeze(np.array([h11, h12, h13, h21, h22, h23, h31, h32]))  # shape is (8) for a 2D input, (8, N) for a 3D input, (8, H, W) for a 4D input
@@ -558,9 +569,9 @@ def deform_image(image: np.ndarray,
     Returns:
         np.ndarray: The deformed image. Same shape as the input (unless subset_slice is used)."""
     if PC is None:
-        PC = np.array([0.0, 0.0])
-    ii = np.arange(image.shape[0]) - (image.shape[0] / 2 + PC[1])
-    jj = np.arange(image.shape[1]) - (image.shape[1] / 2 + PC[0])
+        PC = np.array([image.shape[1] / 2, image.shape[0] / 2])
+    ii = np.arange(image.shape[0]) - PC[1]
+    jj = np.arange(image.shape[1]) - PC[0]
     II, JJ = np.meshgrid(ii, jj, indexing="ij")
     xi = np.array([II[subset_slice].flatten(), JJ[subset_slice].flatten()])
     spline = interpolate.RectBivariateSpline(ii, jj, image, kx=kx, ky=ky)
@@ -643,8 +654,9 @@ def FMT(image, X, Y, x, y):
 def _get_gcc_guesses(ref: np.ndarray,
                      targets: np.ndarray,
                      PC: tuple | list | np.ndarray,
-                     tilt: float | int = 70.0,
-                     roi_size: int = 1024):
+                     tilt: float | int,
+                     roi_size: int,
+                     full: bool = True) -> np.ndarray:
     """Perform a global cross-correlation initial guess for the homographies of the targets.
     Rotation is determined using a Fourier-Mellin Transform.
     Translation is determined using a 2D cross-correlation.
@@ -716,7 +728,7 @@ def _get_gcc_guesses(ref: np.ndarray,
         # cc = signal.correlate(ref_FMT, tar_FMT, mode='same', method="fft")
         theta = (np.argmax(cc) - len(cc) / 2) * np.pi / len(cc)
         # Apply the rotation
-        h = shift_to_homography_partial(0, 0, -theta)
+        h = shift_to_homography_partial(np.array([[0, 0, -theta]]))[0]
         tar_rot = deform_image(tar, h, PC)
         # tar_rot = ndimage.rotate(tar, -np.degrees(theta), reshape=False)
         # Do the translation search
@@ -741,48 +753,83 @@ def _get_gcc_guesses(ref: np.ndarray,
         # plt.close(fig)
 
     # Convert the measurements to homographies
-    homographies = shift_to_homography(measurements, PC, tilt)
-    print(homographies.shape)
-    # if progress is not None:
-    #     print(f"Progress: {round(progress * 100, 2)}%" + " "*10, end="\r", flush=True)
+    if full:
+        homographies = shift_to_homography(measurements, PC, tilt)
+    else:
+        homographies = shift_to_homography_partial(measurements)
     return homographies
 
 
-def get_initial_guess(ref, targets, PC, split_size=7):
+def get_initial_guess(ref, targets, PC, tilt: float = -30.0, subset_size: int = 1024, guess_type: str = "full", split_size: int = 7):
+    """Wrapper function to get the initial guesses for the homographies of the targets.
+
+    Args:
+        ref (np.ndarray): The reference pattern. (H, W)
+        targets (np.ndarray): The target patterns. (M, N, H, W) or (N, H, W) or (H, W) for example.
+        PC (array-like): The pattern center. (xpc, ypc, DD)
+        tilt (float): The tilt angle of the sample in degrees. Default is -30.0.
+        subset_size (int): The size of the region of interest to use. Must be a mutliple of 2 (128, 256, 512, etc.) Default is 1024.
+        guess_type (str): The type of guess to make. Options are "full" and "none". Default is "full".
+        split_size (int): The size of the splits to use when parallelizing the guess. Default is 7.
+
+    Returns:
+        np.ndarray: The homographies of the targets. (M, N, 8) or (N, 8) or (8) for example."""
     # Check inputs
     targets = np.asarray(targets)
+
+    if guess_type == "none":
+        if targets.ndim == 2:
+            return np.zeros((8,), dtype=np.float32)
+        else:
+            return np.zeros(targets.shape[:-2] + (8,), dtype=np.float32)
+    elif guess_type == "full":
+        full = True
+    else:
+        full = False
 
     # Get the guesses
     if targets.ndim == 2:
         # Case where we have a single target
-        return np.squeeze(_get_gcc_guesses(ref, targets.reshape(1, *targets.shape), PC))
+        _targets = targets.reshape(1, *targets.shape)
+        out = _get_gcc_guesses(ref, _targets, PC, tilt, subset_size, full)
+        out = np.squeeze(out)
     elif targets.ndim == 3 and targets.shape[0] < 100:
         # Case where we have a 1D array of targets but not enough to parallelize
-        return _get_gcc_guesses(ref, targets, PC)
+        out = _get_gcc_guesses(ref, targets, PC, tilt, subset_size, full)
     elif targets.ndim == 4 and targets.size < 100:
         # Case where we have a 2D array of targets but not enough to parallelize
         shape = targets.shape[:2]
-        return _get_gcc_guesses(ref, targets.reshape(-1, targets.shape[2], targets.shape[3]), PC).reshape(shape + (8,))
+        _targets = targets.reshape(-1, targets.shape[2], targets.shape[3])
+        out = _get_gcc_guesses(ref, _targets, PC, tilt, subset_size, full)
+        out = out.reshape(shape + (8,))
     elif targets.ndim == 3 and targets.shape[0] >= 100:
         # Case where we have a 1D array of targets and enough to parallelize
-        print("There are enough targets to parallelize. Starting pool.", targets.shape)
         shape = targets.shape[:1]
         N = mpire.cpu_count() // 2
         splits = np.array_split(targets, targets.shape[0] // split_size)
-        pbar_options={'desc': 'Making initial guesses', 'unit': 'batches'}
+        pbar_options = {'desc': 'Making initial guesses', 'unit': 'batches'}
         with mpire.WorkerPool(n_jobs=N) as pool:
-            results = pool.map(_get_gcc_guesses, [(ref, split, PC) for split in splits], progress_bar=True, progress_bar_options=pbar_options)
-        return np.concatenate(results).reshape(shape + (8,))
+            results = pool.map(_get_gcc_guesses,
+                               [(ref, split, PC, tilt, subset_size, full) for split in splits],
+                               progress_bar=True,
+                               progress_bar_options=pbar_options)
+        out = np.concatenate(results).reshape(shape + (8,))
     else:
         # Case where we have a 2D array of targets and enough to parallelize
-        print("There are enough targets to parallelize. Starting pool.", targets.shape)
         shape = targets.shape[:2]
         N = mpire.cpu_count() // 2
-        splits = np.array_split(targets.reshape(-1, targets.shape[2], targets.shape[3]), np.prod(shape[:2]) // split_size)
-        pbar_options={'desc': 'Making initial guesses', 'unit': 'batches'}
+        splits = np.array_split(targets.reshape(-1,
+                                                targets.shape[2],
+                                                targets.shape[3]),
+                                np.prod(shape[:2]) // split_size)
+        pbar_options = {'desc': 'Making initial guesses', 'unit': 'batches'}
         with mpire.WorkerPool(n_jobs=N) as pool:
-            results = pool.map(_get_gcc_guesses, [(ref, split, PC) for split in splits], progress_bar=True, progress_bar_options=pbar_options)
-        return np.concatenate(results).reshape(shape + (8,))
+            results = pool.map(_get_gcc_guesses,
+                               [(ref, split, PC, tilt, subset_size, full) for split in splits],
+                               progress_bar=True,
+                               progress_bar_options=pbar_options)
+        out = np.concatenate(results).reshape(shape + (8,))
+    return out
 
 
 if __name__ == "__main__":
