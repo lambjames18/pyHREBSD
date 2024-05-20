@@ -233,7 +233,7 @@ def get_sharpness(imgs: np.ndarray) -> np.ndarray:
     return shp
 
 
-def process_patterns(imgs: np.ndarray, blur: bool = True, equalize: bool = True, truncate: bool = True, batch_size: int = 8) -> np.ndarray:
+def process_patterns(imgs: np.ndarray, sigma: float = 0.0, equalize: bool = True, truncate: bool = True, batch_size: int = 8) -> np.ndarray:
     """Cleans patterns by equalizing the histogram and normalizing.
 
     Args:
@@ -258,27 +258,33 @@ def process_patterns(imgs: np.ndarray, blur: bool = True, equalize: bool = True,
     if truncate:
         imgs[imgs < np.percentile(imgs, 1)] = np.percentile(imgs, 50)
         imgs[imgs > np.percentile(imgs, 99)] = np.percentile(imgs, 50)
-    background = ndimage.gaussian_filter(imgs.mean(axis=0), 5)
-    imgs = imgs - background
-    imgs = (imgs - imgs.min(axis=(1,2))[:,None,None]) / (imgs.max(axis=(1,2)) - imgs.min(axis=(1,2)))[:,None,None]
+    # background = ndimage.gaussian_filter(imgs.mean(axis=0), imgs.shape[-1] / 10)
+    # imgs = imgs - background
+    # imgs = (imgs - imgs.min(axis=(1,2))[:,None,None]) / (imgs.max(axis=(1,2)) - imgs.min(axis=(1,2)))[:,None,None]
 
     # Convert to torch tensor, set device, create output tensor
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     imgs = torch.tensor(imgs, dtype=torch.float32).to(device)
 
     # Create processing functions
-    def make_odd(x):
-        return x if x % 2 == 1 else x + 1
+    def get_kernel(sigma):
+        k = sigma if sigma % 2 == 1 else sigma + 1
+        return (int(k), int(k)), (float(sigma), float(sigma))
 
     # Process the patterns, using batches
+    bk, bs = get_kernel(int(imgs.shape[-1] / 10))
     imgs_batched = list(torch.split(imgs, batch_size, dim=0))
     for i in tqdm(range(len(imgs_batched)), desc='Processing patterns', unit='batches'):
         imgs = kornia.enhance.normalize_min_max(imgs_batched[i], 0.0, 1.0)
-        if blur:
-            imgs = kornia.filters.gaussian_blur2d(imgs, (3, 3), (1.0, 1.0))
-            imgs = kornia.enhance.normalize_min_max(imgs, 0.0, 1.0)
+        background = kornia.filters.gaussian_blur2d(imgs, bk, bs)
+        imgs = imgs - background
+        imgs = kornia.enhance.normalize_min_max(imgs, 0.0, 1.0)
         if equalize:
             imgs = kornia.enhance.equalize_clahe(imgs)
+            imgs = kornia.enhance.normalize_min_max(imgs, 0.0, 1.0)
+        if sigma > 0.0:
+            k, s = get_kernel(sigma)
+            imgs = kornia.filters.gaussian_blur2d(imgs, k, s)
             imgs = kornia.enhance.normalize_min_max(imgs, 0.0, 1.0)
 
         imgs_batched[i] = imgs
@@ -548,3 +554,24 @@ def make_video(folder, save_path):
         video.write(cv2.imread(os.path.join(folder, image)))
     cv2.destroyAllWindows()
     video.release()
+
+
+def standardize_axis(ax, **kwargs):
+    kwargs["labelsize"] = kwargs.get("labelsize", 20)
+    kwargs["labelcolor"] = kwargs.get("labelcolor", "k")
+    kwargs["direction"] = kwargs.get("direction", "in")
+    kwargs["top"] = kwargs.get("top", True)
+    kwargs["right"] = kwargs.get("right", True)
+    ax.tick_params(axis="both", which="both", **kwargs)
+    ax.grid(alpha=0.3, which="major")
+    ax.grid(alpha=0.1, which="minor")
+
+
+def make_legend(ax, **kwargs):
+    # kwargs["bbox_to_anchor"] = kwargs.get("bbox_to_anchor", (1.03, 1.05))
+    # kwargs["loc"] = kwargs.get("loc", "upper right")
+    kwargs["fontsize"] = kwargs.get("fontsize", 18)
+    kwargs["shadow"] = kwargs.get("shadow", True)
+    kwargs["framealpha"] = kwargs.get("framealpha", 1)
+    kwargs["fancybox"] = kwargs.get("fancybox", False)
+    ax.legend(**kwargs)

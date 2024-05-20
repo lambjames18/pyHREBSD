@@ -12,9 +12,9 @@ if __name__ == "__main__":
 
     ### Parameters ###
     # Names and paths
-    save_name = f"SiGeScanA"
-    up2 = "E:/SiGe/ScanA.up2"
-    ang = "E:/SiGe/ScanA.ang"
+    save_name = f"SiGeScanB"
+    up2 = "E:/SiGe/ScanB.up2"
+    ang = "E:/SiGe/ScanB.ang"
 
     # Geometry
     pixel_size = 13.0  # The pixel size in um
@@ -23,8 +23,8 @@ if __name__ == "__main__":
 
     # Pattern processing
     truncate = True
-    equalize = False
-    DoG_sigmas = (1.0, 30.0)  # The sigmas for the difference of Gaussians filter
+    sigma = 20
+    equalize = True
 
     # Initial guess
     initial_subset_size = 2048  # The size of the subset, must be a power of 2
@@ -33,9 +33,9 @@ if __name__ == "__main__":
     # Subpixel registration
     h_center = "image"  # The homography center for deformation, "pattern" or "image"
     max_iter = 50  # The maximum number of iterations for the subpixel registration
-    conv_tol = 1e-4  # The convergence tolerance for the subpixel registration
+    conv_tol = 1e-3  # The convergence tolerance for the subpixel registration
     subset_shape = "rectangle"  # The shape of the subset for the subpixel registration, "rectangle", "ellipse", or "donut"
-    subset_size = (1638, 1638) # The size of the subset for the subpixel registration, (H, W) for "rectangle", (a, b) for "ellipse", or (r_in, r_out) for "donut"
+    subset_size = (2000, 2000) # The size of the subset for the subpixel registration, (H, W) for "rectangle", (a, b) for "ellipse", or (r_in, r_out) for "donut"
 
     # Reference index
     x0 = 0  # The index of the reference pattern
@@ -48,10 +48,7 @@ if __name__ == "__main__":
     # Read in data
     pat_obj, ang_data = utilities.get_scan_data(up2, ang)
 
-    idx = np.arange(75, 95, 5)
-    idx = np.array([0, 1])
-    pats = utilities.get_patterns(pat_obj, idx=idx).astype(float)
-    pats = utilities.process_patterns(pats, equalize=equalize, truncate=truncate)
+    idx = np.arange(0, pat_obj.nPatterns)
 
     # Set the homography center properly
     if h_center == "pattern":
@@ -60,16 +57,20 @@ if __name__ == "__main__":
         PC = (pat_obj.patshape[1] / 2, pat_obj.patshape[0] / 2, ang_data.pc[2])
 
     if calc:
+        # Get patterns
+        pats = utilities.get_patterns(pat_obj, idx=idx).astype(float)
+        pats = utilities.process_patterns(pats, sigma=sigma, equalize=equalize,truncate=truncate)
+
         # Get initial guesses
         R = pats[x0]
-        T = pats[1:]
+        T = pats
         tilt = 90 - sample_tilt + detector_tilt
         p0 = pyHREBSD.get_initial_guess(R, T, PC, tilt, initial_subset_size, guess_type)
-        print(p0)
 
         # Get homographies
         subset_slice = (slice(int(PC[1] - subset_size[0] / 2), int(PC[1] + subset_size[0] / 2)),
                         slice(int(PC[0] - subset_size[1] / 2), int(PC[0] + subset_size[1] / 2)))
+        print("Getting homographies...")
         p, i_count, residuals = pyHREBSD.get_homography(
             R,
             T,
@@ -78,17 +79,20 @@ if __name__ == "__main__":
             PC=PC,
             max_iter=max_iter,
             conv_tol=conv_tol,
-            parallel=False,
+            parallel=True,
         )
-        print(p, i_count, residuals)
         np.save(f"{save_name}_p.npy", p)
 
     else:
         p = np.load(f"{save_name}_p.npy")
 
     # Get deformation gradients and strain
-    Fe = pyHREBSD.homography_to_elastic_deformation(p, PC)
-    e, w = pyHREBSD.deformation_to_stress_strain(Fe)
+    # PC_mod = (ang_data.pc[0] - 1024, ang_data.pc[1] - 1024, PC[2])
+    PC_mod = ((ang_data.pc[0] - 1024) * pixel_size, (ang_data.pc[1] - 1024) * pixel_size, PC[2] * pixel_size)
+    Fe = pyHREBSD.homography_to_elastic_deformation(p, PC_mod)
+    # C = utilities.get_stiffness_tensor(165.6, 63.9, 79.5, structure="cubic")
+    # e, w, s = pyHREBSD.deformation_to_stress_strain(Fe, C, small_strain=False)
+    e, w, s = pyHREBSD.deformation_to_stress_strain(Fe, small_strain=False)
 
     # Print time
     t1 = time.time()
@@ -97,29 +101,28 @@ if __name__ == "__main__":
     print(f">Total time for the entire run: {hours:2.0f}:{minutes:2.0f}:{seconds:2.0f}")
 
     # Save the results
-    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-    ax.plot(idx, e[:, 0, 0], label="e_xx")
-    ax.plot(idx, e[:, 1, 1], label="e_yy")
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Strain")
-    ax.legend()
+    fig, ax = plt.subplots(3, 3, figsize=(15, 14))
+    ax[0, 0].scatter(idx, e[..., 0, 0], marker="s", label=r"$\epsilon_{11}$")
+    ax[0, 1].scatter(idx, e[..., 0, 1], marker="s", label=r"$\epsilon_{12}$")
+    ax[0, 2].scatter(idx, e[..., 0, 2], marker="s", label=r"$\epsilon_{13}$")
+    ax[1, 1].scatter(idx, e[..., 1, 1], marker="s", label=r"$\epsilon_{22}$")
+    ax[1, 2].scatter(idx, e[..., 1, 2], marker="s", label=r"$\epsilon_{23}$")
+    ax[2, 2].scatter(idx, e[..., 2, 2], marker="s", label=r"$\epsilon_{33}$")
+
+    for a in [ax[0, 0], ax[0, 1], ax[0, 2], ax[1, 1], ax[1, 2], ax[2, 2]]:
+        a.set_ylim(-0.01, 0.01)
+        # a.set_ylim(-0.0016, 0.0016)
+        utilities.standardize_axis(a)
+        utilities.make_legend(a)
+
+    # ax[1, 0].scatter(idx, i_count, marker="s", label="Iterations")
+    # ax[2, 0].scatter(idx, residuals, marker="s", label="Residuals")
+    ax[1, 0].axis("off")
+    ax[2, 0].axis("off")
+    ax[2, 1].axis("off")
+    # for a in [ax[1, 0], ax[2, 0]]:
+    #     utilities.standardize_axis(a)
+    #     utilities.make_legend(a)
+
     plt.tight_layout()
-    fig1, ax1 = plt.subplots(2, 4, figsize=(16, 8))
-    ax1[0, 0].plot(idx, p[:, 0])
-    ax1[0, 1].plot(idx, p[:, 1])
-    ax1[0, 2].plot(idx, p[:, 2])
-    ax1[0, 3].plot(idx, p[:, 3])
-    ax1[1, 0].plot(idx, p[:, 4])
-    ax1[1, 1].plot(idx, p[:, 5])
-    ax1[1, 2].plot(idx, p[:, 6])
-    ax1[1, 3].plot(idx, p[:, 7])
-    ax1[0, 0].set_title("p11")
-    ax1[0, 1].set_title("p12")
-    ax1[0, 2].set_title("p13")
-    ax1[0, 3].set_title("p21")
-    ax1[1, 0].set_title("p22")
-    ax1[1, 1].set_title("p23")
-    ax1[1, 2].set_title("p31")
-    ax1[1, 3].set_title("p32")
-    plt.tight_layout()
-    plt.show()
+    plt.savefig(f"{save_name}_strain_results.png", dpi=300)

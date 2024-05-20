@@ -39,10 +39,6 @@ e22 = data[:, 7]
 e23 = data[:, 8]
 e33 = data[:, 9]
 
-print("Reference:", data[0])
-print("Other:", data[1])
-exit()
-
 color = np.array([(254, 188, 17) for i in range(len(ids))])
 color[e22 < -0.001] = (0, 54, 96)
 color = color / 255
