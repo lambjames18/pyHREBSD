@@ -265,7 +265,7 @@ def get_homography(R, T, PC, subset_slice=None, conv_tol=1e-5, max_iter=50, p0=N
     if parallel:
         args = [(p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter) for i in range(T.shape[0])]
         pbar_options={'desc': 'IC-GN optimization', 'unit': 'targets'}
-        with mpire.WorkerPool(n_jobs=20) as pool:
+        with mpire.WorkerPool(n_jobs=16) as pool:
             p_out = pool.map(IC_GN, args, progress_bar=True, progress_bar_options=pbar_options)
     else:
         p_out = []

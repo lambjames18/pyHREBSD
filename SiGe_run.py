@@ -82,9 +82,13 @@ if __name__ == "__main__":
             parallel=True,
         )
         np.save(f"{save_name}_p.npy", p)
+        np.save(f"{save_name}_i_count.npy", i_count)
+        np.save(f"{save_name}_residuals.npy", residuals)
 
     else:
         p = np.load(f"{save_name}_p.npy")
+        i_count = np.load(f"{save_name}_i_count.npy")
+        residuals = np.load(f"{save_name}_residuals.npy")
 
     # Get deformation gradients and strain
     # PC_mod = (ang_data.pc[0] - 1024, ang_data.pc[1] - 1024, PC[2])
@@ -115,14 +119,14 @@ if __name__ == "__main__":
         utilities.standardize_axis(a)
         utilities.make_legend(a)
 
-    # ax[1, 0].scatter(idx, i_count, marker="s", label="Iterations")
-    # ax[2, 0].scatter(idx, residuals, marker="s", label="Residuals")
-    ax[1, 0].axis("off")
-    ax[2, 0].axis("off")
+    ax[1, 0].scatter(idx, i_count, marker="s", label="Iterations")
+    ax[2, 0].scatter(idx, residuals, marker="s", label="Residuals")
+    # ax[1, 0].axis("off")
+    # ax[2, 0].axis("off")
     ax[2, 1].axis("off")
-    # for a in [ax[1, 0], ax[2, 0]]:
-    #     utilities.standardize_axis(a)
-    #     utilities.make_legend(a)
+    for a in [ax[1, 0], ax[2, 0]]:
+        utilities.standardize_axis(a)
+        utilities.make_legend(a)
 
     plt.tight_layout()
     plt.savefig(f"{save_name}_strain_results.png", dpi=300)
