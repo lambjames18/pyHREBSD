@@ -161,7 +161,8 @@ def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter
         # Copmute the gradient of the correlation criterion
         dC_IC_ZNSSD = 2 / dr_tilde * np.matmul(e, NablaR_dot_Jac.T)  # 8x1
 
-        # Find the deformation incriment, delta_p, by solving the linear system H.dot(delta_p) = -dC_IC_ZNSSD using the Cholesky decomposition
+        # Find the deformation incriment, delta_p, by solving the linear system
+        # H.dot(delta_p) = -dC_IC_ZNSSD using the Cholesky decomposition
         c, lower = linalg.cho_factor(H)
         dp = linalg.cho_solve((c, lower), -dC_IC_ZNSSD.reshape(-1, 1))[:, 0]
 
@@ -170,7 +171,6 @@ def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter
         Wp = W(p).dot(np.linalg.inv(W(dp)))
         Wp = Wp / Wp[2, 2]
         p = (Wp - np.eye(3)).flatten()[:8]
-        # p = np.array([Wp[0, 0] - 1, Wp[0, 1], Wp[0, 2], Wp[1, 0], Wp[1, 1] - 1, Wp[1, 2], Wp[2, 0], Wp[2, 1]])
 
         # Store the update
         norms.append(norm)
@@ -191,25 +191,25 @@ def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter
         if norm < conv_tol:
             break
 
-    row = int(xi[0].max() - xi[0].min() + 1)
-    col = int(xi[1].max() - xi[1].min() + 1)
-    fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-    ax[0].imshow(r.reshape(row, col), cmap='gray')
-    ax[0].set_title("Reference")
-    ax[1].imshow(t_deformed.reshape(row, col), cmap='gray')
-    ax[1].set_title("Deformed target")
-    ax[2].imshow(e.reshape(row, col), cmap='gray', vmin=-1e-3, vmax=1e-3)
-    ax[2].set_title("Residual")
-    plt.tight_layout()
-    plt.savefig(f"gif/IC-GN_{time.time()}.png")
-    plt.close(fig)
+    # row = int(xi[0].max() - xi[0].min() + 1)
+    # col = int(xi[1].max() - xi[1].min() + 1)
+    # fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+    # ax[0].imshow(r.reshape(row, col), cmap='gray')
+    # ax[0].set_title("Reference")
+    # ax[1].imshow(t_deformed.reshape(row, col), cmap='gray')
+    # ax[1].set_title("Deformed target")
+    # ax[2].imshow(e.reshape(row, col), cmap='gray', vmin=-1e-3, vmax=1e-3)
+    # ax[2].set_title("Residual")
+    # plt.tight_layout()
+    # plt.savefig(f"gif/IC-GN_{time.time()}.png")
+    # plt.close(fig)
 
     if num_iter >= max_iter:
         print(f"Warning: Maximum number of iterations reached!")
     return p, num_iter, residuals[-1]
 
 
-def get_homography(R, T, PC, subset_slice=None, conv_tol=1e-5, max_iter=50, p0=None, parallel=True) -> np.ndarray:
+def get_homography(R, T, PC, subset_slice=None, conv_tol=1e-5, max_iter=50, p0=None, parallel_cores=1) -> np.ndarray:
     """Run the inverse compositional Gauss-Newton algorithm on a set of EBSD patterns.
 
     Args:
@@ -260,12 +260,14 @@ def get_homography(R, T, PC, subset_slice=None, conv_tol=1e-5, max_iter=50, p0=N
 
     # Precompute values for the reference subset
     r, dr_tilde, NablaR_dot_Jac, H, xi = reference_precompute(R, subset_slice, PC)
+    if parallel_cores == -1:
+        parallel_cores = mpire.cpu_count()
 
     # Start loop over targets
-    if parallel:
+    if (parallel_cores > 1) and (T.shape[0] > 1):
         args = [(p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter) for i in range(T.shape[0])]
         pbar_options={'desc': 'IC-GN optimization', 'unit': 'targets'}
-        with mpire.WorkerPool(n_jobs=16) as pool:
+        with mpire.WorkerPool(n_jobs=parallel_cores) as pool:
             p_out = pool.map(IC_GN, args, progress_bar=True, progress_bar_options=pbar_options)
     else:
         p_out = []

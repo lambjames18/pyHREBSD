@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from scipy import interpolate, linalg, signal, ndimage
 from tqdm.auto import tqdm
 import mpire
+import torch
 
 import rotations
 
@@ -44,6 +45,8 @@ def normalize(img):
     Returns:
         np.ndarray: The normalized image."""
     # img = (img - img.min()) / (img.max() - img.min())
+    N = 
+    img_bar = torch.mean(img)
     img_bar = img.mean()
     dimg_tilde = np.sqrt(((img - img_bar)**2).sum())
     return (img - img_bar) / dimg_tilde
@@ -146,9 +149,9 @@ def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter
 
     # Run the iterations
     num_iter = 0
-    updates = []
+    norms = []
     residuals = []
-    while num_iter < max_iter:
+    while num_iter <= max_iter:
         # Warp the target subset
         num_iter += 1
         t_deformed = deform(xi, T_spline, p)
@@ -161,42 +164,52 @@ def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter
         # Copmute the gradient of the correlation criterion
         dC_IC_ZNSSD = 2 / dr_tilde * np.matmul(e, NablaR_dot_Jac.T)  # 8x1
 
-        # Find the deformation incriment, delta_p, by solving the linear system H.dot(delta_p) = -dC_IC_ZNSSD using the Cholesky decomposition
+        # Find the deformation incriment, delta_p, by solving the linear system
+        # H.dot(delta_p) = -dC_IC_ZNSSD using the Cholesky decomposition
         c, lower = linalg.cho_factor(H)
         dp = linalg.cho_solve((c, lower), -dC_IC_ZNSSD.reshape(-1, 1))[:, 0]
 
         # Update the parameters
         norm = dp_norm(dp, xi)
-        Wp = W(p)
-        Wp = Wp.dot(np.linalg.inv(W(dp)))
-
+        Wp = W(p).dot(np.linalg.inv(W(dp)))
         Wp = Wp / Wp[2, 2]
-        p = np.array([Wp[0, 0] - 1, Wp[0, 1], Wp[0, 2],
-                    Wp[1, 0], Wp[1, 1] - 1, Wp[1, 2],
-                    Wp[2, 0], Wp[2, 1]])
+        p = (Wp - np.eye(3)).flatten()[:8]
 
         # Store the update
-        updates.append(norm)
+        norms.append(norm)
 
         # Check for convergence
-        print(f"Iteration {num_iter}: E = {residuals[-1]:.2e}, Norm = {norm}, ({dp[0]:.2e}, {dp[1]:.2e}, {dp[2]:.2e}, {dp[3]:.2e}, {dp[4]:.2e}, {dp[5]:.2e}, {dp[6]:.2e}, {dp[7]:.2e})")
+        # print(f"\tIteration {num_iter}: E = {residuals[-1]:.2e}, Norm = {norm}")
+        # rows = int(xi[0].max() - xi[0].min() + 1)
+        # cols = int(xi[1].max() - xi[1].min() + 1)
+        # fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+        # ax[0].imshow(r.reshape(rows, cols), cmap='gray')
+        # ax[0].set_title("Reference")
+        # ax[1].imshow(t_deformed.reshape(rows, cols), cmap='gray')
+        # ax[1].set_title("Deformed target")
+        # ax[2].imshow(e.reshape(rows, cols), cmap='gray')
+        # ax[2].set_title("Residual")
+        # plt.savefig(f"gif/IC-GN_{num_iter}.png")
+        # plt.close(fig)
         if norm < conv_tol:
             break
 
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-    ax[0].imshow(e.reshape(np.sqrt(e.size).astype(int), np.sqrt(e.size).astype(int)))
-    ax[0].set_title("Final residuals")
-    ax[1].plot(residuals)
-    ax[1].set_title("Residuals over iterations")
-    axt = ax[1].twinx()
-    axt.plot(updates, color='red')
-    axt.set_ylabel("Update norm")
+    row = int(xi[0].max() - xi[0].min() + 1)
+    col = int(xi[1].max() - xi[1].min() + 1)
+    fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+    ax[0].imshow(r.reshape(row, col), cmap='gray')
+    ax[0].set_title("Reference")
+    ax[1].imshow(t_deformed.reshape(row, col), cmap='gray')
+    ax[1].set_title("Deformed target")
+    ax[2].imshow(e.reshape(row, col), cmap='gray', vmin=-1e-3, vmax=1e-3)
+    ax[2].set_title("Residual")
     plt.tight_layout()
-    plt.savefig("IC-GN_{}.png".format(time.time()))
-    
-    if num_iter == max_iter:
+    plt.savefig(f"gif/IC-GN_{time.time()}.png")
+    plt.close(fig)
+
+    if num_iter >= max_iter:
         print(f"Warning: Maximum number of iterations reached!")
-    return p, max_iter, residuals[-1]
+    return p, num_iter, residuals[-1]
 
 
 def get_homography(R, T, PC, subset_slice=None, conv_tol=1e-5, max_iter=50, p0=None, parallel=True) -> np.ndarray:
@@ -255,21 +268,15 @@ def get_homography(R, T, PC, subset_slice=None, conv_tol=1e-5, max_iter=50, p0=N
     if parallel:
         args = [(p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter) for i in range(T.shape[0])]
         pbar_options={'desc': 'IC-GN optimization', 'unit': 'targets'}
-        with mpire.WorkerPool(n_jobs=mpire.cpu_count() // 2) as pool:
+        with mpire.WorkerPool(n_jobs=16) as pool:
             p_out = pool.map(IC_GN, args, progress_bar=True, progress_bar_options=pbar_options)
-        p_out = np.squeeze(p_out.reshape(out_shape + (8,)))
     else:
-        # p_out = np.zeros_like(p0)
         p_out = []
         for i in tqdm(range(T.shape[0]), desc="IC-GN optimization", unit="targets"):
-            # p_out[i] = IC_GN(p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter)
             p_out.append(IC_GN(p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter))
-        iter_count = np.squeeze(np.array([i[1] for i in p_out]).reshape(out_shape + (1,)))
-        residuals = np.squeeze(np.array([i[2] for i in p_out]).reshape(out_shape + (1,)))
-        p_out = np.squeeze(np.array([i[0] for i in p_out]).reshape(out_shape + (8,)))
-
-    # Apply a tolerance
-    p_out[np.abs(p_out) < 1e-9] = 0
+    iter_count = np.squeeze(np.array([i[1] for i in p_out]).reshape(out_shape + (1,)))
+    residuals = np.squeeze(np.array([i[2] for i in p_out]).reshape(out_shape + (1,)))
+    p_out = np.squeeze(np.array([i[0] for i in p_out]).reshape(out_shape + (8,)))
     return p_out, iter_count, residuals
 
 
@@ -319,7 +326,7 @@ def homography_to_elastic_deformation(H, PC):
     return Fe
 
 
-def deformation_to_stress_strain(Fe: np.ndarray, C: np.ndarray = None) -> tuple:
+def deformation_to_stress_strain(Fe: np.ndarray, C: np.ndarray = None, small_strain: bool = False) -> tuple:
     """Calculate the elastic strain tensor from the deformation gradient.
     Also calculates the lattice rotation matrix.
 
@@ -337,23 +344,32 @@ def deformation_to_stress_strain(Fe: np.ndarray, C: np.ndarray = None) -> tuple:
         I = np.squeeze(np.eye(3)[None, ...])
     elif Fe.ndim == 2:
         I = np.eye(3)
-    # Calculate the small strain tensor
-    # Use small strain theory to decompose the deformation gradient into the elastic strain tensor and the rotation matrix
-    d = Fe - I
-    if Fe.ndim == 2:
-        dT = d.T
-    elif Fe.ndim == 3:
-        dT = d.transpose(0, 2, 1)
-    elif Fe.ndim == 4:
-        dT = d.transpose(0, 1, 3, 2)
-    epsilon = 0.5 * (d + dT)
+
 
     # Calculate the rotation tensor
     # Use the polar decomposition of the deformation gradient to decompose it into the rotation matrix and the stretch tensor
     W, S, V = np.linalg.svd(Fe, full_matrices=True)
     omega_finite = np.matmul(W, V)
-    # Sigma = np.einsum('...i,ij->...ij', S, np.eye(3))
-    # epsilon = np.matmul(W, np.matmul(Sigma, W.transpose(0, 1, 3, 2))) - I
+
+    # Calculate the small strain tensor
+    # Use small strain theory to decompose the deformation gradient into the elastic strain tensor and the rotation matrix
+    if small_strain:
+        d = Fe - I
+        if Fe.ndim == 2:
+            dT = d.T
+        elif Fe.ndim == 3:
+            dT = d.transpose(0, 2, 1)
+        elif Fe.ndim == 4:
+            dT = d.transpose(0, 1, 3, 2)
+        epsilon = 0.5 * (d + dT)
+    else:
+        Sigma = np.einsum('...i,ij->...ij', S, np.eye(3))
+        if Fe.ndim == 2:
+            epsilon = np.matmul(W, np.matmul(Sigma, W.T)) - I
+        elif Fe.ndim == 3:
+            epsilon = np.matmul(W, np.matmul(Sigma, W.transpose(0, 2, 1))) - I
+        elif Fe.ndim == 4:
+            epsilon = np.matmul(W, np.matmul(Sigma, W.transpose(0, 1, 3, 2))) - I
 
     # Convert finite rotation matrix to a lattice rotation matrix
     v = rotations.om2ax(omega_finite)
@@ -373,8 +389,8 @@ def deformation_to_stress_strain(Fe: np.ndarray, C: np.ndarray = None) -> tuple:
         omega = np.transpose(omega, (0, 1, 3, 2))
 
     # Apply a tolerance
-    epsilon[np.abs(epsilon) < 1e-4] = 0
-    omega[np.abs(omega) < 1e-4] = 0
+    # epsilon[np.abs(epsilon) < 1e-4] = 0
+    # omega[np.abs(omega) < 1e-4] = 0
 
     if C is None:
         return epsilon, omega
@@ -407,7 +423,7 @@ def deformation_to_stress_strain(Fe: np.ndarray, C: np.ndarray = None) -> tuple:
         stress[..., 0, 1] = stress_voigt[..., 5]
 
         # Apply a tolerance
-        stress[np.abs(stress) < 1e-4] = 0
+        # stress[np.abs(stress) < 1e-4] = 0
 
         return epsilon, omega, stress
 
@@ -542,6 +558,7 @@ def shift_to_homography(shifts: np.ndarray, PC: tuple | list | np.ndarray, tilt:
 
 def deform(xi: np.ndarray, spline: interpolate.RectBivariateSpline, p: np.ndarray) -> np.ndarray:
     """Deform a subset using a homography.
+    TODO: Need to make it so that out-of-bounds points are replaced with noise.
 
     Args:
         xi (np.ndarray): The subset coordinates. Shape is (2, N).

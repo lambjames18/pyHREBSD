@@ -12,9 +12,10 @@ if __name__ == "__main__":
 
     ### Parameters ###
     # Names and paths
-    save_name = f"SiGeScanB"
-    up2 = "E:/SiGe/ScanB.up2"
-    ang = "E:/SiGe/ScanB.ang"
+    sample = "A"  # The sample to analyze, "A" or "B"
+    save_name = dict(A=f"SiGeScanA", B=f"SiGeScanB")[sample]
+    up2 = dict(A="E:/SiGe/ScanA.up2", B="E:/SiGe/ScanB.up2")[sample]
+    ang = dict(A="E:/SiGe/ScanA.ang", B="E:/SiGe/ScanB.ang")[sample]
 
     # Geometry
     pixel_size = 13.0  # The pixel size in um
@@ -41,9 +42,8 @@ if __name__ == "__main__":
     x0 = 0  # The index of the reference pattern
 
     # Run the calc or load the results
-    calc = True
+    calc = False
     ### Parameters ###
-
 
     # Read in data
     pat_obj, ang_data = utilities.get_scan_data(up2, ang)
@@ -79,7 +79,7 @@ if __name__ == "__main__":
             PC=PC,
             max_iter=max_iter,
             conv_tol=conv_tol,
-            parallel=True,
+            parallel_cores=10,
         )
         np.save(f"{save_name}_p.npy", p)
         np.save(f"{save_name}_i_count.npy", i_count)
@@ -91,12 +91,11 @@ if __name__ == "__main__":
         residuals = np.load(f"{save_name}_residuals.npy")
 
     # Get deformation gradients and strain
-    # PC_mod = (ang_data.pc[0] - 1024, ang_data.pc[1] - 1024, PC[2])
-    PC_mod = ((ang_data.pc[0] - 1024) * pixel_size, (ang_data.pc[1] - 1024) * pixel_size, PC[2] * pixel_size)
+    PC_mod = (ang_data.pc[0] - 1024, ang_data.pc[1] - 1024, PC[2])
     Fe = pyHREBSD.homography_to_elastic_deformation(p, PC_mod)
     # C = utilities.get_stiffness_tensor(165.6, 63.9, 79.5, structure="cubic")
     # e, w, s = pyHREBSD.deformation_to_stress_strain(Fe, C, small_strain=False)
-    e, w, s = pyHREBSD.deformation_to_stress_strain(Fe, small_strain=False)
+    e, w = pyHREBSD.deformation_to_stress_strain(Fe, small_strain=False)
 
     # Print time
     t1 = time.time()
@@ -104,25 +103,28 @@ if __name__ == "__main__":
     minutes, seconds = divmod(rem, 60)
     print(f">Total time for the entire run: {hours:2.0f}:{minutes:2.0f}:{seconds:2.0f}")
 
+    color = np.ones((e.shape[0], 3)) * (254, 188, 17)
+    # color[residuals > 0.00011] = (0, 54, 96)
+    color[residuals > 0.00009] = (0, 54, 96)
+    color = color / 255
+
     # Save the results
     fig, ax = plt.subplots(3, 3, figsize=(15, 14))
-    ax[0, 0].scatter(idx, e[..., 0, 0], marker="s", label=r"$\epsilon_{11}$")
-    ax[0, 1].scatter(idx, e[..., 0, 1], marker="s", label=r"$\epsilon_{12}$")
-    ax[0, 2].scatter(idx, e[..., 0, 2], marker="s", label=r"$\epsilon_{13}$")
-    ax[1, 1].scatter(idx, e[..., 1, 1], marker="s", label=r"$\epsilon_{22}$")
-    ax[1, 2].scatter(idx, e[..., 1, 2], marker="s", label=r"$\epsilon_{23}$")
-    ax[2, 2].scatter(idx, e[..., 2, 2], marker="s", label=r"$\epsilon_{33}$")
+    ax[0, 0].scatter(idx, e[..., 0, 0], marker="s", label=r"$\epsilon_{11}$", c=color)
+    ax[0, 1].scatter(idx, e[..., 0, 1], marker="s", label=r"$\epsilon_{12}$", c=color)
+    ax[0, 2].scatter(idx, e[..., 0, 2], marker="s", label=r"$\epsilon_{13}$", c=color)
+    ax[1, 1].scatter(idx, e[..., 1, 1], marker="s", label=r"$\epsilon_{22}$", c=color)
+    ax[1, 2].scatter(idx, e[..., 1, 2], marker="s", label=r"$\epsilon_{23}$", c=color)
+    ax[2, 2].scatter(idx, e[..., 2, 2], marker="s", label=r"$\epsilon_{33}$", c=color)
 
     for a in [ax[0, 0], ax[0, 1], ax[0, 2], ax[1, 1], ax[1, 2], ax[2, 2]]:
-        a.set_ylim(-0.01, 0.01)
+        a.set_ylim(-0.02, 0.02)
         # a.set_ylim(-0.0016, 0.0016)
         utilities.standardize_axis(a)
         utilities.make_legend(a)
 
-    ax[1, 0].scatter(idx, i_count, marker="s", label="Iterations")
-    ax[2, 0].scatter(idx, residuals, marker="s", label="Residuals")
-    # ax[1, 0].axis("off")
-    # ax[2, 0].axis("off")
+    ax[1, 0].scatter(idx, i_count, marker="s", label="Iterations", c=color)
+    ax[2, 0].scatter(idx, residuals, marker="s", label="Residuals", c=color)
     ax[2, 1].axis("off")
     for a in [ax[1, 0], ax[2, 0]]:
         utilities.standardize_axis(a)
