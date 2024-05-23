@@ -1,100 +1,224 @@
+from collections import namedtuple
+import time
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-import ebsd_pattern
 from tqdm.auto import tqdm
 from skimage import io
 import mpire
-import h5py
+import torch
+
+import Data
+import utilities
 
 
-def fft_transform(img):
-    imgarray = np.asarray(img, dtype='float')
-    f = np.fft.fft2(imgarray)
-    f = np.real(f)
-    fshift = np.fft.fftshift(f)
-    return fshift
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+elif torch.mps.is_available():
+    device = torch.device('mps')
+else:
+    device = torch.device('cpu')
 
-def Sharpness(img, return_pwr_spct=False):
-    y = fft_transform(img)
-    AF = abs(y)
-    M = AF.max()
-    thresh = M / 2500
-    th = (y > thresh).sum()
-    shp = th / (img.shape[0] * img.shape[1])
-    if return_pwr_spct:
-        log_pow_spect = np.log(AF)
-        log_pow_spect = (log_pow_spect - log_pow_spect.min()) / (log_pow_spect.max() - log_pow_spect.min()) * 65535
-        fshiftdisp = (y - y.min()) / (y.max() - y.min()) * 255
-        return (shp,log_pow_spect.astype('uint16'))
+
+def _get_sharpness_torch(ebsd_data: namedtuple, batch_size: int = 8, lazy=True) -> np.ndarray:
+    """Calculates the sharpness of an image/stack of images.
+
+    Args:
+        imgs (np.ndarray): The images to calculate the sharpness of. (H, W) or (N, H, W) or (N0, N1, H, W)
+
+    Returns:
+        np.ndarray: The sharpness of the images. float, (N,) or (N0, N1) for example."""
+    # Process inputs
+    if not lazy:
+        imgs = ebsd_data.get_patterns()
+
+        # Convert to torch tensor, set device, create output tensor
+        imgs = torch.tensor(imgs, dtype=torch.float32).to(device)  # (N, H, W)
+
+        # Separate the imgs into batches
+        imgs_split = list(torch.split(imgs, batch_size, dim=0))  # (M, batch_size, H, W) where M is the number of batches and batch_size is not a constant
+        shp = torch.tensor([], dtype=torch.float32).to(device)
+
+        # Calculate sharpness
+        for i in tqdm(range(len(imgs_split)), desc='Calculating sharpness', unit='batches'):
+            shp = torch.cat((shp, _calc_sharpness_torch(imgs_split[i])), dim=0)
+        
     else:
-        return shp
+        # Put into batches
+        idx = np.arange(ebsd_data.nPatterns)
+        idx_split = np.array_split(idx, ebsd_data.nPatterns // batch_size)  # (M, batch_size) where M is the number of batches and batch_size is not a constant
+        args = [(ebsd_data, idx) for idx in idx_split]
 
-def fft_transform_multi(imgs):
-    imgarray = np.asarray(imgs, dtype='float')
-    f = np.fft.fft2(imgarray, axes=(1,2))
+        shp = np.array([])
+        for i in tqdm(range(len(idx_split)), desc='Calculating sharpness', unit='batches'):
+            shp = torch.cat((shp, _calc_sharpness_torch_lazy(args[i])), dim=0)
+
+    # Convert to numpy and reshape if necessary
+    shp = np.squeeze(shp.cpu().numpy())
+    return shp
+
+
+def _calc_sharpness_torch_lazy(args: tuple) -> torch.Tensor:
+    """Calculates the sharpness of an image/stack of images.
+
+    Args:
+        args (tuple): The arguments to calculate the sharpness of. (ebsd_data, idx)
+
+    Returns:
+        torch.Tensor: The sharpness of the images. float, (N,)"""
+    ebsd_data, idx = args
+    pats = ebsd_data.get_patterns(idx)
+    pats = torch.tensor(pats, dtype=torch.float32).to(device)
+    f = torch.fft.fft2(pats)
+    f = torch.real(f)
+    fshift = torch.fft.fftshift(f)
+    AF = torch.abs(fshift)
+    thresh = torch.amax(AF, dim=(1, 2), keepdim=True) / 2500
+    th = torch.sum(fshift > thresh, dim=(1, 2), keepdim=True)
+    return th / (pats.shape[2] * pats.shape[3])
+
+
+
+def _calc_sharpness_torch(imgs: torch.Tensor) -> torch.Tensor:
+    """Calculates the sharpness of an image/stack of images.
+
+    Args:
+        imgs (torch.Tensor): The images to calculate the sharpness of. (N, 1, H, W)
+
+    Returns:
+        torch.Tensor: The sharpness of the images. float, (N,)"""
+    f = torch.fft.fft2(imgs)
+    f = torch.real(f)
+    fshift = torch.fft.fftshift(f)
+    AF = torch.abs(fshift)
+    thresh = torch.amax(AF, dim=(1, 2), keepdim=True) / 2500
+    th = torch.sum(fshift > thresh, dim=(1, 2), keepdim=True)
+    return th / (imgs.shape[2] * imgs.shape[3])
+
+
+def _get_sharpness_numpy(ebsd_data: namedtuple, batch_size: int = 8, parallel: bool = False, lazy = True) -> np.ndarray:
+    """Calculates the sharpness of an image/stack of images.
+    
+    Args:
+        imgs (np.ndarray): The images to calculate the sharpness of. (H, W) or (N, H, W) or (N0, N1, H, W)
+        batch_size (int): The number of images to process at once.
+
+    Returns:
+        np.ndarray: The sharpness of the images. float, (N,) or (N0, N1) for example."""
+    if not lazy:
+        imgs = ebsd_data.get_patterns()
+        # Put into batches
+        imgs_split = np.array_split(imgs, imgs.shape[0] // batch_size)  # (M, batch_size, H, W) where M is the number of batches and batch_size is not a constant
+
+        if parallel:
+            with mpire.WorkerPool(n_jobs=os.cpu_count() // 2) as pool:
+                shp = pool.map(_calc_sharpness_numpy, imgs_split, progress_bar=True)
+        else:
+            shp = np.array([])
+            for i in tqdm(range(len(imgs_split)), desc='Calculating sharpness', unit='batches'):
+                shp = np.concatenate((shp, _calc_sharpness_numpy(imgs_split[i])))
+    else:
+        # Put into batches
+        idx = np.arange(ebsd_data.nPatterns)
+        idx_split = np.array_split(idx, ebsd_data.nPatterns // batch_size)  # (M, batch_size) where M is the number of batches and batch_size is not a constant
+        args = [(ebsd_data, idx) for idx in idx_split]
+
+        if parallel:
+            with mpire.WorkerPool(n_jobs=os.cpu_count() // 2) as pool:
+                shp = pool.map(_calc_sharpness_numpy_lazy, args, progress_bar=True)
+        else:
+            shp = np.array([])
+            for i in tqdm(range(len(idx_split)), desc='Calculating sharpness', unit='batches'):
+                shp = np.concatenate((shp, _calc_sharpness_numpy_lazy(args[i])))
+
+    # Reshape if necessary
+    shp = np.squeeze(shp)
+    return shp
+
+
+def _calc_sharpness_numpy_lazy(args: tuple) -> np.ndarray:
+    """Calculates the sharpness of an image/stack of images.
+    
+    Args:
+        args (tuple): The arguments to calculate the sharpness of. (ebsd_data, idx)
+
+    Returns:
+        np.ndarray: The sharpness of the images. float, (N,)"""
+    ebsd_data, idx = args
+    pats = ebsd_data.get_patterns(idx)
+    f = np.fft.fft2(pats, axes=(1,2))
     f = np.real(f)
     fshift = np.fft.fftshift(f, axes=(1,2))
-    return fshift
+    AF = abs(fshift)
+    thresh = AF.max(axis=(1,2)) / 2500
+    th = (fshift > thresh[:,None,None]).sum(axis=(1,2))
+    return th / (pats.shape[1] * pats.shape[2])
 
-def Sharpness_multi(imgs):
-    ys = fft_transform_multi(imgs)
-    AF = abs(ys)
-    M = AF.max(axis=(1,2))
-    thresh = M / 2500
-    th = (ys > thresh[:,None,None]).sum(axis=(1,2))
-    shp = th / (imgs.shape[1] * imgs.shape[2])
-    return shp
 
-def main(indices, pobj):
-    shp = []
-    for index in indices:
-        p = np.squeeze(pobj.pat_reader(index, 1))
-        shp.append(Sharpness(p))
-    return shp
+def _calc_sharpness_numpy(imgs: np.ndarray) -> np.ndarray:
+    """Calculates the sharpness of an image/stack of images.
 
-def main_multi(pats):
-    shp = Sharpness_multi(pats)
-    return shp
+    Args:
+        imgs (np.ndarray): The images to calculate the sharpness of. (N, H, W)
 
-def read_H5(path):
-    h5 = h5py.File(path, 'r')
-    pats = h5["EMData/DefectEBSD/EBSDPatterns"][:]
-    h5.close()
-    shape = pats.shape[:2]
-    pats = pats.reshape(-1, *pats.shape[2:])
-    return pats, shape
+    Returns:
+        np.ndarray: The sharpness of the images. float, (N,)"""
+    f = np.fft.fft2(imgs, axes=(1,2))
+    f = np.real(f)
+    fshift = np.fft.fftshift(f, axes=(1,2))
+    AF = abs(fshift)
+    thresh = AF.max(axis=(1,2)) / 2500
+    th = (fshift > thresh[:,None,None]).sum(axis=(1,2))
+    return th / (imgs.shape[1] * imgs.shape[2])
 
-def read_UP2(path, shape):
-    pobj = ebsd_pattern.get_pattern_file_obj(path)
-    pobj.read_header()
-    pats = np.squeeze(pobj.pat_reader(0, pobj.nPatterns))
-    return pats, shape
 
+def get_sharpness(ebsd_data: namedtuple, use_torch: bool = False, batch_size: int = 8, lazy: bool = True, parallel: bool = True) -> np.ndarray:
+    """Calculate the sharpness of a pattern object.
+    This function can be used with either numpy for CPU or torch for GPU/MPS.
+    If CPU is used, this can be parallelized if desired.
+    It is also RAM safe by using lazy loading if desired.
+
+    Args:
+        ebsd_data (namedtuple): The pattern object to calculate the sharpness of.
+        use_torch (bool): Whether to use torch or numpy.
+        batch_size (int): The number of patterns to process at once.
+        lazy (bool): Whether to use lazy loading.
+        parallel (bool): Whether to parallelize the calculation.
+
+    Returns:
+        np.ndarray: The sharpness of the patterns."""
+    if use_torch:
+        return _get_sharpness_torch(ebsd_data, batch_size, lazy)
+    else:
+        return _get_sharpness_numpy(ebsd_data, batch_size, parallel, lazy)
+
+
+# TODO: change the pattern object to a class that has a read_patterns method
 
 if __name__ == "__main__":
+    ang = "E:/SiGe/ScanA.ang"
+    up2 = "E:/SiGe/ScanA.up2"
+    ebsd_data = Data.EBSDData(up2, ang)
 
-    # file = "E:/James/20230906_24015_10kV_3200pA_1200x1200-1pointrepeat_120HFW_100nmstepsize_10point5cameratilt_11WD_movie_256x256.up2"
-    # file = "Y:/Archive/2023/James/James_90degSCANSTRATEGY/20230906_24015_10kV_3200pA_1200x1200-1pointrepeat_120HFW_100nmstepsize_10point5cameratilt_11WD_movie_1024x1024.up2"
-    # file = "E:/Evan/Print14_block-LC-11/Area 2/map20231107135457056.up2"
-    # pats, shape = read_UP2(file, (1501, 1001))
-    file = "F:/MDG_SimulatedDislocationDataset/EBSDoutfullRAM.h5"
-    dirname, filename = os.path.split(file)
+    t0 = time.time()
+    sharpness = get_sharpness(ebsd_data, use_torch=True, batch_size=8, lazy=True, parallel=False)
+    print("Torch lazy:", time.time() - t0)
 
-    print(f"Reading in {filename}")
-    pats, shape = read_H5(file)
-    print(f"Finished reading in {filename}, shape: {shape}, number of patterns: {pats.shape}")
+    t0 = time.time()
+    sharpness = get_sharpness(ebsd_data, use_torch=True, batch_size=8, lazy=False, parallel=False)
+    print("Torch:", time.time() - t0)
 
-    batches = pats.shape[0] // 150
-    print(f"Calculating sharpness in {batches} batches")
-    pats_split = np.array_split(pats, batches)
-    
-    with mpire.WorkerPool(n_jobs=24) as pool:
-        sharpness = pool.map(main_multi, pats_split, progress_bar=True)
+    t0 = time.time()
+    sharpness = get_sharpness(ebsd_data, use_torch=False, batch_size=8, lazy=True, parallel=False)
+    print("Numpy lazy:", time.time() - t0)
 
-    sharpness = sharpness.reshape(shape)
-    print(f"Saving sharpness to {dirname}")
-    io.imsave(os.path.join(dirname, filename.split(".")[0] + "_raw.tiff"), sharpness)
-    sharpness = np.around((sharpness - sharpness.min()) / (sharpness.max() - sharpness.min()) * 65535).astype('uint16')
-    io.imsave(os.path.join(dirname, filename.split(".")[0] + "_uint16.tiff"), sharpness)
-    print("Done")
+    t0 = time.time()
+    sharpness = get_sharpness(ebsd_data, use_torch=False, batch_size=8, lazy=False, parallel=False)
+    print("Numpy:", time.time() - t0)
+
+    # sharpness = sharpness.reshape(shape)
+    # print(f"Saving sharpness to {dirname}")
+    # io.imsave(os.path.join(dirname, filename.split(".")[0] + "_raw.tiff"), sharpness)
+    # sharpness = np.around((sharpness - sharpness.min()) / (sharpness.max() - sharpness.min()) * 65535).astype('uint16')
+    # io.imsave(os.path.join(dirname, filename.split(".")[0] + "_uint16.tiff"), sharpness)
+    # print("Done")
