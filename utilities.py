@@ -173,7 +173,7 @@ def get_patterns(pat_obj: namedtuple, idx: np.ndarray | list | tuple = None) -> 
             reshape = True
             out_shape = idx.shape + pat_obj.patshape
             idx = idx.flatten()
-    print(idx)
+
     # Read in the patterns
     start_byte = np.int64(16)
     pattern_bytes = np.int64(pat_obj.patshape[0] * pat_obj.patshape[1] * 2)
@@ -255,16 +255,16 @@ def process_patterns(imgs: np.ndarray, sigma: float = 0.0, equalize: bool = True
         reshape = imgs.shape[:2]
         imgs = imgs.reshape(-1, *imgs.shape[2:])
     imgs = imgs.astype(np.float32).reshape(imgs.shape[0], 1, imgs.shape[1], imgs.shape[2])
-    if truncate:
-        imgs[imgs < np.percentile(imgs, 1)] = np.percentile(imgs, 50)
-        imgs[imgs > np.percentile(imgs, 99)] = np.percentile(imgs, 50)
+    median = np.percentile(imgs, 50)
+    low_percentile = np.percentile(imgs, 1)
+    high_percentile = np.percentile(imgs, 99)
     # background = ndimage.gaussian_filter(imgs.mean(axis=0), imgs.shape[-1] / 10)
     # imgs = imgs - background
     # imgs = (imgs - imgs.min(axis=(1,2))[:,None,None]) / (imgs.max(axis=(1,2)) - imgs.min(axis=(1,2)))[:,None,None]
 
     # Convert to torch tensor, set device, create output tensor
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    imgs = torch.tensor(imgs, dtype=torch.float32).to(device)
+    imgs = torch.tensor(imgs, dtype=torch.float32).to("cpu")
 
     # Create processing functions
     def get_kernel(sigma):
@@ -275,7 +275,11 @@ def process_patterns(imgs: np.ndarray, sigma: float = 0.0, equalize: bool = True
     bk, bs = get_kernel(int(imgs.shape[-1] / 10))
     imgs_batched = list(torch.split(imgs, batch_size, dim=0))
     for i in tqdm(range(len(imgs_batched)), desc='Processing patterns', unit='batches'):
-        imgs = kornia.enhance.normalize_min_max(imgs_batched[i], 0.0, 1.0)
+        imgs = imgs_batched[i].to(device)
+        if truncate:
+            imgs[imgs < low_percentile] = median
+            imgs[imgs > high_percentile] = median
+        imgs = kornia.enhance.normalize_min_max(imgs, 0.0, 1.0)
         background = kornia.filters.gaussian_blur2d(imgs, bk, bs)
         imgs = imgs - background
         imgs = kornia.enhance.normalize_min_max(imgs, 0.0, 1.0)
@@ -287,7 +291,7 @@ def process_patterns(imgs: np.ndarray, sigma: float = 0.0, equalize: bool = True
             imgs = kornia.filters.gaussian_blur2d(imgs, k, s)
             imgs = kornia.enhance.normalize_min_max(imgs, 0.0, 1.0)
 
-        imgs_batched[i] = imgs
+        imgs_batched[i] = imgs.to("cpu")
     if len(imgs_batched) > 1:
         imgs = torch.cat(imgs_batched, dim=0)
     else:

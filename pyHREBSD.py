@@ -100,7 +100,7 @@ def reference_precompute(R, subset_slice, PC) -> tuple:
 
     # Compute the Hessian
     H = 2 / r_zmsv**2 * NablaR_dot_Jac.dot(NablaR_dot_Jac.T)
-    
+
     return r, r_zmsv, NablaR_dot_Jac, H, xi
 
 
@@ -141,6 +141,7 @@ def get_xi_prime(xi, p) -> np.ndarray:
 def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter=50) -> np.ndarray:
     # Precompute the target subset
     T_spline = target_precompute(T, PC)
+    c, lower = linalg.cho_factor(H)
 
     p = p0.copy()
 
@@ -163,14 +164,14 @@ def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter
 
         # Find the deformation incriment, delta_p, by solving the linear system
         # H.dot(delta_p) = -dC_IC_ZNSSD using the Cholesky decomposition
-        c, lower = linalg.cho_factor(H)
         dp = linalg.cho_solve((c, lower), -dC_IC_ZNSSD.reshape(-1, 1))[:, 0]
 
         # Update the parameters
         norm = dp_norm(dp, xi)
-        Wp = W(p).dot(np.linalg.inv(W(dp)))
-        Wp = Wp / Wp[2, 2]
-        p = (Wp - np.eye(3)).flatten()[:8]
+        Wp = W(p)
+        Wdp = W(dp)
+        Wpdp = Wp.dot(np.linalg.inv(Wdp))
+        p = ((Wpdp / Wpdp[2, 2]) - np.eye(3)).flatten()[:8]
 
         # Store the update
         norms.append(norm)
