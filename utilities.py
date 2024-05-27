@@ -388,7 +388,6 @@ def process_pattern(
     if sigma > 0.0:
         img = ndimage.gaussian_filter(img, sigma)
         img = (img - img.min()) / (img.max() - img.min())
-
     return img
 
 

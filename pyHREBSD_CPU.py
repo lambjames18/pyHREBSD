@@ -244,20 +244,3 @@ def IC_GN_vectorized(p0, r, T, r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3,
             break
     # Convert the outputs to numpy arrays
     return p#, num_iter, residuals
-
-
-# Lazy HREBSD implementation that reads in patterns as it goes
-
-
-from collections import namedtuple
-array_like = np.ndarray | list | tuple
-
-
-def calculate_homography(pat_obj:namedtuple,
-                         r:np.ndarray,
-                         PC:array_like,
-                         ref_precomute:tuple,
-                         image_processing_kwargs:dict={},
-                         conv_tol:float=1e-3,
-                         max_iter:int=50) -> tuple:
-    #
