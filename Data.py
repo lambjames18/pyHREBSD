@@ -51,7 +51,7 @@ class EBSDData:
         self.equalize = equalize
         self.truncate = truncate
 
-    def get_patterns(self, idx: int | np.ndarray | tuple | list) -> np.ndarray:
+    def get_patterns(self, idx: int | np.ndarray | tuple | list = None) -> np.ndarray:
         """Gets a single pattern.
 
         Args:
@@ -59,7 +59,9 @@ class EBSDData:
 
         Returns:
             np.ndarray: The pattern."""
-        if isinstance(idx, (int, np.integer)):
+        if idx is None:
+            idx = range(self.nPatterns)
+        elif isinstance(idx, (int, np.integer)):
             idx = np.array([idx])
         else:
             idx = np.asarray(idx)
@@ -263,7 +265,8 @@ def get_patterns(pat_obj: namedtuple, idx: np.ndarray | list | tuple = None) -> 
     start_byte = np.int64(16)
     pattern_bytes = np.int64(pat_obj.patshape[0] * pat_obj.patshape[1] * 2)
     pats = np.zeros((len(idx), *pat_obj.patshape), dtype=np.uint16)
-    for i in tqdm(range(len(idx)), desc="Reading patterns", unit="pats"):
+    for i in range(len(idx)):
+    # for i in tqdm(range(len(idx)), desc="Reading patterns", unit="pats"):
         pat = np.int64(idx[i])
         seek_pos = start_byte + pat * pattern_bytes
         pat_obj.datafile.seek(seek_pos)

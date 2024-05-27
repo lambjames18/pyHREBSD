@@ -6,6 +6,7 @@ from tqdm.auto import tqdm
 import mpire
 
 import rotations
+import warp
 
 
 ### Functions for running HREBSD ###
@@ -138,21 +139,26 @@ def get_xi_prime(xi, p) -> np.ndarray:
     return xi_prime[:2] / xi_prime[2]
 
 
-def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter=50) -> np.ndarray:
+def IC_GN(index, p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter=50) -> np.ndarray:
     # Precompute the target subset
     T_spline = target_precompute(T, PC)
     c, lower = linalg.cho_factor(H)
 
     p = p0.copy()
 
+    # Create the initial guess values that will be saved later
+    t_guess = warp.deform(xi, T_spline, p)
+    t_guess = normalize(t_guess)
+    e_guess = r - t_guess
+
     # Run the iterations
     num_iter = 0
     norms = []
     residuals = []
-    while num_iter <= max_iter:
+    while num_iter < max_iter:
         # Warp the target subset
         num_iter += 1
-        t_deformed = deform(xi, T_spline, p)
+        t_deformed = warp.deform(xi, T_spline, p)
         t_deformed = normalize(t_deformed)
 
         # Compute the residuals
@@ -192,22 +198,29 @@ def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter
         if norm < conv_tol:
             break
 
-    # row = int(xi[0].max() - xi[0].min() + 1)
-    # col = int(xi[1].max() - xi[1].min() + 1)
-    # fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-    # ax[0].imshow(r.reshape(row, col), cmap='gray')
-    # ax[0].set_title("Reference")
-    # ax[1].imshow(t_deformed.reshape(row, col), cmap='gray')
-    # ax[1].set_title("Deformed target")
-    # ax[2].imshow(e.reshape(row, col), cmap='gray', vmin=-1e-3, vmax=1e-3)
-    # ax[2].set_title("Residual")
-    # plt.tight_layout()
-    # plt.savefig(f"gif/IC-GN_{time.time()}.png")
-    # plt.close(fig)
+    row = int(xi[0].max() - xi[0].min() + 1)
+    col = int(xi[1].max() - xi[1].min() + 1)
+    fig, ax = plt.subplots(2, 3, figsize=(12, 8))
+    ax[0, 0].imshow(r.reshape(row, col), cmap='gray')
+    ax[0, 0].set_title("Reference")
+    ax[0, 1].imshow(t_guess.reshape(row, col), cmap='gray')
+    ax[0, 1].set_title("Initial guess")
+    ax[0, 2].imshow(e_guess.reshape(row, col), cmap='gray')
+    ax[0, 2].set_title("Initial residual")
+    ax[1, 0].axis('off')
+    ax[1, 1].imshow(t_deformed.reshape(row, col), cmap='gray')
+    ax[1, 1].set_title("Deformed target")
+    ax[1, 2].imshow(e.reshape(row, col), cmap='gray')
+    ax[1, 2].set_title("Final residual")
+    for a in ax.flatten():
+        a.axis('off')
+    plt.tight_layout()
+    plt.savefig(f"gif/IC-GN_{index}.png")
+    plt.close(fig)
 
     if num_iter >= max_iter:
         print(f"Warning: Maximum number of iterations reached!")
-    return p, num_iter, residuals[-1]
+    return p, num_iter, residuals[-1], norms[-1]
 
 
 def get_homography(R, T, PC, subset_slice=None, conv_tol=1e-5, max_iter=50, p0=None, parallel_cores=1) -> np.ndarray:
@@ -266,18 +279,19 @@ def get_homography(R, T, PC, subset_slice=None, conv_tol=1e-5, max_iter=50, p0=N
 
     # Start loop over targets
     if (parallel_cores > 1) and (T.shape[0] > 1):
-        args = [(p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter) for i in range(T.shape[0])]
-        pbar_options={'desc': 'IC-GN optimization', 'unit': 'targets'}
+        args = [(i, p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter) for i in range(T.shape[0])]
+        pbar_options={'desc': 'IC-GN optimization', 'unit': 'target'}
         with mpire.WorkerPool(n_jobs=parallel_cores) as pool:
             p_out = pool.map(IC_GN, args, progress_bar=True, progress_bar_options=pbar_options)
     else:
         p_out = []
-        for i in tqdm(range(T.shape[0]), desc="IC-GN optimization", unit="targets"):
-            p_out.append(IC_GN(p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter))
+        for i in tqdm(range(T.shape[0]), desc="IC-GN optimization", unit="target"):
+            p_out.append(IC_GN(i, p0[i], r, T[i], dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter))
     iter_count = np.squeeze(np.array([i[1] for i in p_out]).reshape(out_shape + (1,)))
     residuals = np.squeeze(np.array([i[2] for i in p_out]).reshape(out_shape + (1,)))
+    norms = np.squeeze(np.array([i[3] for i in p_out]).reshape(out_shape + (1,)))
     p_out = np.squeeze(np.array([i[0] for i in p_out]).reshape(out_shape + (8,)))
-    return p_out, iter_count, residuals
+    return p_out, iter_count, residuals, norms
 
 
 def homography_to_elastic_deformation(H, PC):
@@ -508,9 +522,9 @@ def shift_to_homography(shifts: np.ndarray, PC: tuple | list | np.ndarray, tilt:
     x_hat = x
     y_hat = y
     # Get omegas
-    w1 = np.around(np.arctan(-y_hat / DD), 3)
-    w2 = np.around(np.arctan(x_hat / DD), 3)
-    w3 = np.around(theta, 3)
+    w1 = np.around(np.arctan(-y_hat / DD), 3)  # w32
+    w2 = np.around(np.arctan(x_hat / DD), 3)  # W13
+    w3 = np.around(theta, 3)  # w21
     # Get the global rotation matrix in the sample frame
     c1, c2, c3 = np.cos(w1), np.cos(w2), np.cos(w3)
     s1, s2, s3 = np.sin(w1), np.sin(w2), np.sin(w3)
@@ -554,47 +568,6 @@ def shift_to_homography(shifts: np.ndarray, PC: tuple | list | np.ndarray, tilt:
     homographies[..., 7] = h32
     # homographies = np.squeeze(np.array([h11, h12, h13, h21, h22, h23, h31, h32]))  # shape is (8) for a 2D input, (8, N) for a 3D input, (8, H, W) for a 4D input
     return np.squeeze(homographies)
-
-
-def deform(xi: np.ndarray, spline: interpolate.RectBivariateSpline, p: np.ndarray) -> np.ndarray:
-    """Deform a subset using a homography.
-    TODO: Need to make it so that out-of-bounds points are replaced with noise.
-
-    Args:
-        xi (np.ndarray): The subset coordinates. Shape is (2, N).
-        spline (interpolate.RectBivariateSpline): The biquintic B-spline of the subset.
-        p (np.ndarray): The homography parameters. Shape is (8,)."""
-    xi_prime = get_xi_prime(xi, p)
-    return spline(xi_prime[0], xi_prime[1], grid=False)
-
-
-def deform_image(image: np.ndarray,
-                 p: np.ndarray,
-                 PC: tuple | list | np.ndarray = None,
-                 subset_slice: tuple = (slice(None), slice(None)),
-                 kx: int = 2, ky: int = 2) -> np.ndarray:
-    """Deform an image using a homography. Creates a bicubic spline of the image, deforms the coordinates of the pixels, and interpolates the deformed coordinates using the spline to get the deformed image.
-
-    Args:
-        image (np.ndarray): The image to be deformed.
-        p (np.ndarray): The homography parameters. has shape (8,).
-        PC (tuple): The pattern center. Default is None, which corresponds to the center of the image.
-        subset_slice (tuple): The slice of the image to be deformed. Default is (slice(None), slice(None)).
-        kx (int): The degree of the spline in the x direction. Default is 2.
-        ky (int): The degree of the spline in the y direction. Default is 2.
-
-    Returns:
-        np.ndarray: The deformed image. Same shape as the input (unless subset_slice is used)."""
-    if PC is None:
-        PC = np.array([image.shape[1] / 2, image.shape[0] / 2])
-    ii = np.arange(image.shape[0]) - PC[1]
-    jj = np.arange(image.shape[1]) - PC[0]
-    II, JJ = np.meshgrid(ii, jj, indexing="ij")
-    xi = np.array([II[subset_slice].flatten(), JJ[subset_slice].flatten()])
-    spline = interpolate.RectBivariateSpline(ii, jj, image, kx=kx, ky=ky)
-    xi_prime = get_xi_prime(xi, p)
-    tar_rot = spline(xi_prime[0], xi_prime[1], grid=False).reshape(image[subset_slice].shape)
-    return tar_rot
 
 
 ### Functions for the initial guesses ###
@@ -690,10 +663,10 @@ def _get_gcc_guesses(ref: np.ndarray,
         np.ndarray: The homographies of the targets. (M, N, 8) or (N, 8) or (8) for example."""
     # Create the subset slice
     c = np.array(ref.shape) // 2
-    if roi_size >= ref.shape[0]:
-        if roi_size // 2 >= ref.shape[0]:
-            if roi_size // 4 >= ref.shape[0]:
-                if roi_size // 8 >= ref.shape[0]:
+    if roi_size > ref.shape[0]:
+        if roi_size // 2 > ref.shape[0]:
+            if roi_size // 4 > ref.shape[0]:
+                if roi_size // 8 > ref.shape[0]:
                     roi_size = ref.shape[0]
                 else:
                     roi_size //= 8
@@ -746,28 +719,38 @@ def _get_gcc_guesses(ref: np.ndarray,
         theta = (np.argmax(cc) - len(cc) / 2) * np.pi / len(cc)
         # Apply the rotation
         h = shift_to_homography_partial(np.array([[0, 0, -theta]]))[0]
-        tar_rot = deform_image(tar, h, PC)
+        tar_rot = warp.deform_image(tar, h, PC)
         # tar_rot = ndimage.rotate(tar, -np.degrees(theta), reshape=False)
         # Do the translation search
         cc = signal.fftconvolve(ref, tar_rot[::-1, ::-1], mode='same').real
         # cc = signal.correlate2d(ref, tar_rot, mode='same').real
         shift = np.unravel_index(np.argmax(cc), cc.shape) - np.array(cc.shape) / 2
         # Store the homography
-        measurements[i] = np.array([-shift[1], -shift[0], -theta])
-        # fig, ax = plt.subplots(2, 2, figsize=(10, 10), sharex=True, sharey=True)
-        # ax[0, 0].imshow(ref, cmap='gray')
-        # ax[0, 0].set_title("Reference")
-        # ax[0, 1].imshow(tar, cmap='gray')
-        # ax[0, 1].set_title("Target")
-        # ax[1, 0].imshow(tar_rot, cmap='gray')
-        # ax[1, 0].set_title("Rotated Target")
-        # ax[1, 1].imshow(cc, cmap='gray')
-        # ax[1, 1].scatter(cc.shape[1] / 2, cc.shape[0] / 2, c='r', s=100, marker='x')
-        # ax[1, 1].scatter(cc.shape[1] / 2 + shift[1], cc.shape[0] / 2 + shift[0], c='r', s=100, marker='*')
-        # ax[1, 1].set_title("Cross-Correlation")
-        # plt.tight_layout()
-        # plt.savefig(f"CC_{i}.png")
-        # plt.close(fig)
+        measurements[i] = np.array([shift[1], shift[0], -theta])
+        h = shift_to_homography_partial(measurements[i].reshape(1, -1))[0]
+        tar_rot_shift = warp.deform_image(tar_rot, h, PC)
+        fig, ax = plt.subplots(2, 4, figsize=(20, 10), sharex=True, sharey=True)
+        ax[0, 0].imshow(ref, cmap='gray')
+        ax[0, 0].set_title("Reference")
+        ax[1, 0].imshow(cc, cmap='gray')
+        ax[1, 0].scatter(cc.shape[1] / 2, cc.shape[0] / 2, c='r', s=100, marker='x')
+        ax[1, 0].scatter(cc.shape[1] / 2 + shift[1], cc.shape[0] / 2 + shift[0], c='r', s=100, marker='*')
+        ax[1, 0].set_title("Cross-Correlation")
+        ax[0, 1].imshow(tar, cmap='gray')
+        ax[0, 1].set_title("Target")
+        ax[0, 2].imshow(tar_rot, cmap='gray')
+        ax[0, 2].set_title("Rotated Target")
+        ax[0, 3].imshow(tar_rot_shift, cmap='gray')
+        ax[0, 3].set_title("Shifted Rotated Target")
+        ax[1, 1].imshow(ref - tar, cmap='gray')
+        ax[1, 1].set_title("Difference")
+        ax[1, 2].imshow(ref - tar_rot, cmap='gray')
+        ax[1, 2].set_title("Difference")
+        ax[1, 3].imshow(ref - tar_rot_shift, cmap='gray')
+        ax[1, 3].set_title("Difference")
+        plt.tight_layout()
+        plt.savefig(f"gif/CC_{i}.png")
+        plt.close(fig)
 
     # Convert the measurements to homographies
     if full:
@@ -813,7 +796,7 @@ def get_initial_guess(ref, targets, PC, tilt: float = -30.0, subset_size: int = 
     elif targets.ndim == 3 and targets.shape[0] < 100:
         # Case where we have a 1D array of targets but not enough to parallelize
         out = _get_gcc_guesses(ref, targets, PC, tilt, subset_size, full)
-    elif targets.ndim == 4 and targets.size < 100:
+    elif targets.ndim == 4 and targets.shape[0] * targets.shape[1] < 100:
         # Case where we have a 2D array of targets but not enough to parallelize
         shape = targets.shape[:2]
         _targets = targets.reshape(-1, targets.shape[2], targets.shape[3])
@@ -915,7 +898,7 @@ if __name__ == "__main__":
         # Warp the target subset
         if num_iter == 0:
             p = p0.copy()
-        t_deformed = deform(xi, T_spline, p)
+        t_deformed = warp.deform(xi, T_spline, p)
         t_deformed = normalize(t_deformed)
 
         # Compute the residuals

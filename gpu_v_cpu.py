@@ -239,6 +239,7 @@ if __name__ == "__main__":
     import utilities
     import pyHREBSD
     import pyHREBSD_GPU
+    import pyHREBSD_CPU
     import time
     from tqdm.auto import tqdm
     ### Parameters ###
@@ -260,14 +261,14 @@ if __name__ == "__main__":
 
     # Initial guess
     initial_subset_size = 2048  # The size of the subset, must be a power of 2
-    guess_type = "partial"  # The type of initial guess to use, "full", "partial", or "none"
+    guess_type = "none"  # The type of initial guess to use, "full", "partial", or "none"
 
     # Subpixel registration
     h_center = "image"  # The homography center for deformation, "pattern" or "image"
     max_iter = 50  # The maximum number of iterations for the subpixel registration
     conv_tol = 1e-3  # The convergence tolerance for the subpixel registration
     subset_shape = "rectangle"  # The shape of the subset for the subpixel registration, "rectangle", "ellipse", or "donut"
-    subset_size = (2000, 2000) # The size of the subset for the subpixel registration, (H, W) for "rectangle", (a, b) for "ellipse", or (r_in, r_out) for "donut"
+    subset_size = (1000, 1000) # The size of the subset for the subpixel registration, (H, W) for "rectangle", (a, b) for "ellipse", or (r_in, r_out) for "donut"
 
     # Reference index
     x0 = 0  # The index of the reference pattern
@@ -277,7 +278,7 @@ if __name__ == "__main__":
     # Read in data
     pat_obj, ang_data = utilities.get_scan_data(up2, ang)
 
-    idx = np.arange(80, 90)
+    idx = np.arange(80, 110)
 
     # Set the homography center properly
     if h_center == "pattern":
@@ -303,34 +304,50 @@ if __name__ == "__main__":
                     slice(int(PC[0] - subset_size[1] / 2), int(PC[0] + subset_size[1] / 2)))
     r, r_zmsv, NablaR_dot_Jac, H, xi = pyHREBSD.reference_precompute(R, subset_slice, PC)
 
-    # Parallel GPU
+    print("Starting looped CPU timing test...")
+    p_vals_cpu = np.zeros_like(p0)
     t0 = time.time()
-    p_vals_gpu_v = pyHREBSD_GPU.IC_GN_vectorized(p0, r, T, r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol=conv_tol, max_iter=max_iter)
-    t_gpu_v = (time.time() - t0)
-    print(f"\tGPU vectorized time: {t_gpu_v} seconds ({t_gpu_v / T.shape[0]}s per pattern)")
+    args = [(p0[i], r, T[i], r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter) for i in range(T.shape[0])]
+    with mpire.WorkerPool(n_jobs=10) as pool:
+        p_vals_cpu = pool.map(pyHREBSD_CPU.IC_GN, args, progress_bar=True)
+    p_vals_cpu = p_vals_cpu.reshape(-1, 8)
+    t_cpu = (time.time() - t0)
+    print(f"\tTime: {t_cpu} seconds ({t_cpu / T.shape[0]}s per pattern)")
 
-    # print("Starting GPU timing test...")
+    print("Starting vectorized CPU timing test...")
+    t0 = time.time()
+    # p_vals_cpu_v = pyHREBSD_CPU.IC_GN_vectorized(p0, r, T, r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol=conv_tol, max_iter=max_iter)
+    p0_batched = np.array_split(p0, T.shape[0] // 4, axis=0)
+    T_batched = np.array_split(T, T.shape[0] // 4, axis=0)
+    args = [(p0_batched[i], r, T_batched[i], r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter) for i in range(len(p0_batched))]
+    with mpire.WorkerPool(n_jobs=10) as pool:
+        p_vals_cpu_v = pool.map(pyHREBSD_CPU.IC_GN_vectorized, args, progress_bar=True)
+    p_vals_cpu_v = np.array(p_vals_cpu_v).reshape(-1, 8)
+    t_cpu_v = (time.time() - t0)
+    print(f"\tTime: {t_cpu_v} seconds ({t_cpu_v / T.shape[0]}s per pattern)")
+    # same = np.allclose(p_vals_cpu, p_vals_cpu_v, atol=1e-5, rtol=1e-5)
+    # print("CPU and CPU vectorized outputs are the same?", same)
+    # if not same:
+    #     print(zip(p_vals_cpu, p_vals_cpu_v))
+
+    # print("Starting looped GPU timing test...")
     # p_vals_gpu = np.zeros_like(p0)
     # t0 = time.time()
     # for i in tqdm(range(T.shape[0])):
     #     p_vals_gpu[i] = pyHREBSD_GPU.IC_GN(p0[i], r, T[i], r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol=conv_tol, max_iter=max_iter)
     # t_gpu = (time.time() - t0)
-    # print(f"\tGPU time: {t_gpu} seconds (f{t_gpu / T.shape[0]}s per pattern)")
-
-    print("Starting CPU timing test...")
-    p_vals_cpu = np.zeros_like(p0)
-    t0 = time.time()
-    with mpire.WorkerPool(n_jobs=10) as pool:
-        p_vals_cpu = pool.map(pyHREBSD.IC_GN, [(p0[i], r, T[i], r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol, max_iter) for i in range(T.shape[0])])
-    p_vals_cpu = p_vals_cpu.reshape(-1, 8)
-    t_cpu = (time.time() - t0)
-    print(f"\tCPU time: {t_cpu} seconds ({t_cpu / T.shape[0]}s per pattern)")
-
+    # print(f"\tTime: {t_gpu} seconds ({t_gpu / T.shape[0]}s per pattern)")
     # same = np.allclose(p_vals_cpu, p_vals_gpu, atol=1e-5, rtol=1e-5)
     # print("CPU and GPU outputs are the same?", same)
     # if not same:
     #     print(np.array(p_vals_cpu) - np.array(p_vals_gpu))
-    same = np.allclose(p_vals_cpu, p_vals_gpu_v, atol=1e-5, rtol=1e-5)
-    print("CPU and GPU vectorized outputs are the same?", same)
-    if not same:
-        print(zip(p_vals_cpu, p_vals_gpu_v))
+
+    # print("Starting vectorized GPU timing test...")
+    # t0 = time.time()
+    # p_vals_gpu_v = pyHREBSD_GPU.IC_GN_vectorized(p0, r, T, r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol=conv_tol, max_iter=max_iter)
+    # t_gpu_v = (time.time() - t0)
+    # print(f"\tTime: {t_gpu_v} seconds ({t_gpu_v / T.shape[0]}s per pattern)")
+    # same = np.allclose(p_vals_cpu, p_vals_gpu_v, atol=1e-5, rtol=1e-5)
+    # print("CPU and GPU vectorized outputs are the same?", same)
+    # if not same:
+    #     print(zip(p_vals_cpu, p_vals_gpu_v))

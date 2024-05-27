@@ -19,7 +19,7 @@ def W_gpu(p) -> np.ndarray:
         p (np.ndarray): The homography parameters.
     Returns:
         np.ndarray: The shape function matrix."""
-    return torch.cat((p, torch.zeros(1, device=device)), dim=-1).reshape(3, 3) + torch.eye(3, device=device)
+    return (torch.cat((p, torch.zeros(1, device=device)), dim=-1).reshape(3, 3) + torch.eye(3, device=device)).float()
 
 
 def normalize_gpu(img):
@@ -47,7 +47,7 @@ def dp_norm_gpu(dp, xi) -> float:
         float: The norm of the deformation increment."""
     xi1max = xi[0].max()
     xi2max = xi[1].max()
-    ximax = torch.tensor([xi1max, xi2max], device=device)
+    ximax = torch.tensor([xi1max, xi2max], device=device).float()
     dp_i0 = dp[0:2] * ximax
     dp_i1 = dp[3:5] * ximax
     dp_i2 = dp[6:8] * ximax
@@ -78,7 +78,7 @@ def get_xi_prime_gpu(xi, p) -> np.ndarray:
     Returns:
         np.ndarray: The deformed subset coordinates. Shape is (2, N)."""
     Wp = W_gpu(p)
-    xi_3d = torch.vstack((xi, torch.ones(xi.shape[1])))
+    xi_3d = torch.vstack((xi, torch.ones(xi.shape[1], device=device))).float()
     xi_prime = torch.matmul(Wp, xi_3d)
     return xi_prime[:2] / xi_prime[2]
 
@@ -153,7 +153,7 @@ def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter
     if num_iter >= max_iter:
         print("Warning: Maximum number of iterations reached!")
     p = p.detach().cpu().numpy()
-    return p, int(num_iter), float(residuals[-1])
+    return p#, int(num_iter), float(residuals[-1])
 
 
 # Vectorized versions
@@ -234,8 +234,6 @@ def IC_GN_vectorized(p0, r, T, r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3,
     print("Precomputing target subsets...")
     with mpire.WorkerPool(n_jobs=mpire.cpu_count() // 2) as pool:
         T_splines = pool.map(target_precompute, [(T[i], PC) for i in range(len(T))])
-    xi_3d = np.vstack((np.ones(xi.shape[1]), xi[0], xi[1])).T
-    T_spline_3D = interpolate.RBFInterpolator(xi_3d, T.T, kernel="quintic", neighbors=25)
 
     # Convert the inputs to torch tensors
     print("Converting inputs to torch tensors...")
@@ -264,8 +262,8 @@ def IC_GN_vectorized(p0, r, T, r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3,
         num_iter[active] += 1
         xi = xi.cpu()
         p = p.cpu()
-        # with mpire.WorkerPool(n_jobs=mpire.cpu_count() // 2) as pool:
-        #     t_deformed = pool.map(deform_alt, [(xi, T_splines[i], p[i]) for i in range(len(T_splines)) if active[i]])
+        with mpire.WorkerPool(n_jobs=mpire.cpu_count() // 2) as pool:
+            t_deformed = pool.map(deform_alt, [(xi, T_splines[i], p[i]) for i in range(len(T_splines)) if active[i]])
         xi = xi.to(device)
         p = p.to(device)
         # t_deformed = []

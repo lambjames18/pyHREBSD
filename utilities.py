@@ -20,7 +20,9 @@ import rotations
 NUMERIC = r"[-+]?\d*\.\d+|\d+"
 
 
-def convert_pc(PC: tuple | list | np.ndarray, patshape: tuple | list | np.ndarray) -> tuple:
+def convert_pc(
+    PC: tuple | list | np.ndarray, patshape: tuple | list | np.ndarray
+) -> tuple:
     """
     Converts the pattern center from EDAX/TSL standard to the EMsoft standard
     (xstar, ystar, zstar) -> (xpc, ypc, L)
@@ -58,17 +60,17 @@ def read_up2(up2: str) -> namedtuple:
     upFile = open(up2, "rb")
     chunk_size = 4
     tmp = upFile.read(chunk_size)
-    FirstEntryUpFile = struct.unpack('i', tmp)[0]
+    FirstEntryUpFile = struct.unpack("i", tmp)[0]
     tmp = upFile.read(chunk_size)
-    sz1 = struct.unpack('i', tmp)[0]
+    sz1 = struct.unpack("i", tmp)[0]
     tmp = upFile.read(chunk_size)
-    sz2 = struct.unpack('i', tmp)[0]
+    sz2 = struct.unpack("i", tmp)[0]
     tmp = upFile.read(chunk_size)
-    bitsPerPixel = struct.unpack('i', tmp)[0]
+    bitsPerPixel = struct.unpack("i", tmp)[0]
     sizeBytes = os.path.getsize(up2) - 16
     sizeString = str(round(sizeBytes / 1e6, 1)) + " MB"
     bytesPerPixel = 2
-    nPatternsRecorded = int((sizeBytes/bytesPerPixel) / (sz1 * sz2))
+    nPatternsRecorded = int((sizeBytes / bytesPerPixel) / (sz1 * sz2))
     out = namedtuple("up2_file", ["patshape", "filesize", "nPatterns", "datafile"])
     out = out((sz1, sz2), sizeString, nPatternsRecorded, upFile)
     return out
@@ -93,7 +95,8 @@ def read_ang(path: str, patshape: tuple | list | np.ndarray) -> namedtuple:
                     - shape: The shape of the data.
                     - pc: The pattern center.
                     - pidx: The index of the pattern in the pattern file.
-                    - all data columns in the ang file (i.e. x, y, iq, ci, sem, phase_index, etc.)"""
+                    - all data columns in the ang file (i.e. x, y, iq, ci, sem, phase_index, etc.)
+    """
     header_lines = 0
     with open(path, "r") as ang:
         for line in ang:
@@ -117,7 +120,11 @@ def read_ang(path: str, patshape: tuple | list | np.ndarray) -> namedtuple:
     PC = convert_pc((xstar, ystar, zstar), patshape)
     shape = (rows, cols)
     names.extend(["eulers", "quats", "shape", "pc", "pidx"])
-    names = [name.replace(" ", "_").lower() for name in names if name.lower() not in ["phi1", "phi", "phi2"]]
+    names = [
+        name.replace(" ", "_").lower()
+        for name in names
+        if name.lower() not in ["phi1", "phi", "phi2"]
+    ]
 
     # Read in the data
     ang_data = np.genfromtxt(path, skip_header=header_lines)
@@ -129,21 +136,24 @@ def read_ang(path: str, patshape: tuple | list | np.ndarray) -> namedtuple:
     ang_data = np.moveaxis(ang_data, 2, 0)
 
     # Package everything into a namedtuple
-    out = namedtuple("ang_file", names)(*ang_data, eulers=euler, quats=qu, shape=shape, pc=PC, pidx=pidx)
+    out = namedtuple("ang_file", names)(
+        *ang_data, eulers=euler, quats=qu, shape=shape, pc=PC, pidx=pidx
+    )
     return out
 
 
 def get_scan_data(up2: str, ang: str) -> tuple:
     """Reads in patterns and orientations from an ang file and a pattern file.
     Only supports EDAX/TSL.
-    
+
     Args:
         up2 (str): Path to the pattern file.
         ang (str): Path to the ang file.
 
     Returns:
         np.ndarray: The patterns.
-        namedtuple: The orientations. namedtuple with fields corresponding to the columns in the ang file + eulers, quats, shape, pc."""
+        namedtuple: The orientations. namedtuple with fields corresponding to the columns in the ang file + eulers, quats, shape, pc.
+    """
     # Get the patterns
     pat_obj = read_up2(up2)
 
@@ -178,17 +188,44 @@ def get_patterns(pat_obj: namedtuple, idx: np.ndarray | list | tuple = None) -> 
     start_byte = np.int64(16)
     pattern_bytes = np.int64(pat_obj.patshape[0] * pat_obj.patshape[1] * 2)
     pats = np.zeros((len(idx), *pat_obj.patshape), dtype=np.uint16)
-    for i in tqdm(range(len(idx)), desc="Reading patterns", unit="pats"):
+    # for i in tqdm(range(len(idx)), desc="Reading patterns", unit="pats"):
+    for i in range(len(idx)):
         pat = np.int64(idx[i])
-        seek_pos = start_byte + pat * pattern_bytes
+        seek_pos = np.int64(start_byte + pat * pattern_bytes)
         pat_obj.datafile.seek(seek_pos)
-        pats[i] = np.frombuffer(pat_obj.datafile.read(pat_obj.patshape[0] * pat_obj.patshape[1] * 2), dtype=np.uint16).reshape(pat_obj.patshape)
+        pats[i] = np.frombuffer(
+            pat_obj.datafile.read(pat_obj.patshape[0] * pat_obj.patshape[1] * 2),
+            dtype=np.uint16,
+        ).reshape(pat_obj.patshape)
 
     # Reshape the patterns
+    pats = np.squeeze(pats)
     if reshape:
         pats = pats.reshape(out_shape)
 
     return pats
+
+
+def get_pattern(pat_obj: namedtuple, idx: int = None) -> tuple:
+    """Read in patterns from a pattern file object.
+
+    Args:
+        pat_obj (namedtuple): Pattern file object.
+        idx (int): Indice of pattern to read in.
+
+    Returns:
+        np.ndarray: Patterns."""
+    # Read in the patterns
+    start_byte = np.int64(16)
+    pattern_bytes = np.int64(pat_obj.patshape[0] * pat_obj.patshape[1] * 2)
+    # for i in tqdm(range(len(idx)), desc="Reading patterns", unit="pats"):
+    seek_pos = np.int64(start_byte + np.int64(idx) * pattern_bytes)
+    pat_obj.datafile.seek(seek_pos)
+    pat = np.frombuffer(
+        pat_obj.datafile.read(pat_obj.patshape[0] * pat_obj.patshape[1] * 2),
+        dtype=np.uint16,
+    ).reshape(pat_obj.patshape)
+    return pat
 
 
 def get_sharpness(imgs: np.ndarray) -> np.ndarray:
@@ -210,12 +247,12 @@ def get_sharpness(imgs: np.ndarray) -> np.ndarray:
         imgs = imgs.reshape(-1, *imgs.shape[2:])
 
     # Convert to torch tensor, set device, create output tensor
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     imgs = torch.tensor(imgs, dtype=torch.float32).unsqueeze(1).to(device)
     shp = torch.zeros(imgs.shape[0], device=device)
 
     # Calculate sharpness
-    for i in tqdm(range(imgs.shape[0]), desc='Calculating sharpness', unit='pats'):
+    for i in tqdm(range(imgs.shape[0]), desc="Calculating sharpness", unit="pats"):
         f = torch.fft.fft2(imgs[i])
         f = torch.real(f)
         f = torch.fft.fftshift(f)
@@ -233,7 +270,13 @@ def get_sharpness(imgs: np.ndarray) -> np.ndarray:
     return shp
 
 
-def process_patterns(imgs: np.ndarray, sigma: float = 0.0, equalize: bool = True, truncate: bool = True, batch_size: int = 8) -> np.ndarray:
+def process_patterns_gpu(
+    imgs: np.ndarray,
+    sigma: float = 0.0,
+    equalize: bool = True,
+    truncate: bool = True,
+    batch_size: int = 8,
+) -> np.ndarray:
     """Cleans patterns by equalizing the histogram and normalizing.
 
     Args:
@@ -254,7 +297,9 @@ def process_patterns(imgs: np.ndarray, sigma: float = 0.0, equalize: bool = True
     elif imgs.ndim == 4:
         reshape = imgs.shape[:2]
         imgs = imgs.reshape(-1, *imgs.shape[2:])
-    imgs = imgs.astype(np.float32).reshape(imgs.shape[0], 1, imgs.shape[1], imgs.shape[2])
+    imgs = imgs.astype(np.float32).reshape(
+        imgs.shape[0], 1, imgs.shape[1], imgs.shape[2]
+    )
     median = np.percentile(imgs, 50)
     low_percentile = np.percentile(imgs, 1)
     high_percentile = np.percentile(imgs, 99)
@@ -263,7 +308,7 @@ def process_patterns(imgs: np.ndarray, sigma: float = 0.0, equalize: bool = True
     # imgs = (imgs - imgs.min(axis=(1,2))[:,None,None]) / (imgs.max(axis=(1,2)) - imgs.min(axis=(1,2)))[:,None,None]
 
     # Convert to torch tensor, set device, create output tensor
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     imgs = torch.tensor(imgs, dtype=torch.float32).to("cpu")
 
     # Create processing functions
@@ -274,7 +319,7 @@ def process_patterns(imgs: np.ndarray, sigma: float = 0.0, equalize: bool = True
     # Process the patterns, using batches
     bk, bs = get_kernel(int(imgs.shape[-1] / 10))
     imgs_batched = list(torch.split(imgs, batch_size, dim=0))
-    for i in tqdm(range(len(imgs_batched)), desc='Processing patterns', unit='batches'):
+    for i in tqdm(range(len(imgs_batched)), desc="Processing patterns", unit="batches"):
         imgs = imgs_batched[i].to(device)
         if truncate:
             imgs[imgs < low_percentile] = median
@@ -310,6 +355,43 @@ def process_patterns(imgs: np.ndarray, sigma: float = 0.0, equalize: bool = True
     return out
 
 
+def process_pattern(
+    img: np.ndarray, sigma: float = 0.0, equalize: bool = True, truncate: bool = True
+) -> np.ndarray:
+    """Cleans patterns by equalizing the histogram and normalizing.
+
+    Args:
+        img (np.ndarray): The patterns to clean. (H, W)
+        equalize (bool): Whether to equalize the histogram.
+        high_pass (bool): Whether to apply a high-pass filter.
+        truncate (bool): Whether to truncate the patterns.
+
+    Returns:
+        np.ndarray: The cleaned patterns. (N, H, W)"""
+    # Process inputs
+    img = img.astype(np.float32)
+    median = np.percentile(img, 50)
+    low_percentile = np.percentile(img, 1)
+    high_percentile = np.percentile(img, 99)
+
+    # Process the patterns
+    if truncate:
+        img[img < low_percentile] = median
+        img[img > high_percentile] = median
+    img = (img - img.min()) / (img.max() - img.min())
+    background = ndimage.gaussian_filter(img.mean(axis=0), img.shape[-1] / 10)
+    img = img - background
+    img = (img - img.min()) / (img.max() - img.min())
+    if equalize:
+        img = exposure.equalize_adapthist(img)
+        img = (img - img.min()) / (img.max() - img.min())
+    if sigma > 0.0:
+        img = ndimage.gaussian_filter(img, sigma)
+        img = (img - img.min()) / (img.max() - img.min())
+
+    return img
+
+
 def get_index(point: tuple, size: int, ang_data: namedtuple) -> np.ndarray:
     """Get the indices of the patterns that reside within a region of interest.
 
@@ -325,9 +407,13 @@ def get_index(point: tuple, size: int, ang_data: namedtuple) -> np.ndarray:
     x0, x1 = max(x - size // 2, 0), min(x + size // 2, ang_data.shape[0])
     y0, y1 = max(y - size // 2, 0), min(y + size // 2, ang_data.shape[1])
     if x1 - x0 < size:
-        print(" -- get_index warning: the region of interest is too large in the x-direction given the center point.")
+        print(
+            " -- get_index warning: the region of interest is too large in the x-direction given the center point."
+        )
     if y1 - y0 < size:
-        print(" -- get_index warning: the region of interest is too large in the y-direction given the center point.")
+        print(
+            " -- get_index warning: the region of interest is too large in the y-direction given the center point."
+        )
     idx = ang_data.pidx[x0:x1, y0:y1]
     return idx
 
@@ -344,25 +430,39 @@ def get_stiffness_tensor(*C, structure) -> np.ndarray:
     C = np.array(C)
     if structure == "cubic":
         if C.shape[0] != 3:
-            raise ValueError("Cubic crystal structure requires 3 elastic constants in the following order: C11, C12, C44.")
-        C = np.array([[C[0], C[1], C[1],    0,    0,    0],
-                      [C[1], C[0], C[1],    0,    0,    0],
-                      [C[1], C[1], C[0],    0,    0,    0],
-                      [0,       0,    0, C[2],    0,    0],
-                      [0,       0,    0,    0, C[2],    0],
-                      [0,       0,    0,    0,    0, C[2]]])
+            raise ValueError(
+                "Cubic crystal structure requires 3 elastic constants in the following order: C11, C12, C44."
+            )
+        C = np.array(
+            [
+                [C[0], C[1], C[1], 0, 0, 0],
+                [C[1], C[0], C[1], 0, 0, 0],
+                [C[1], C[1], C[0], 0, 0, 0],
+                [0, 0, 0, C[2], 0, 0],
+                [0, 0, 0, 0, C[2], 0],
+                [0, 0, 0, 0, 0, C[2]],
+            ]
+        )
     elif structure == "hexagonal":
         if C.shape[0] != 5:
-            raise ValueError("Hexagonal crystal structure requires 5 elastic constants in the following order: C11, C12, C13, C33, C44.")
+            raise ValueError(
+                "Hexagonal crystal structure requires 5 elastic constants in the following order: C11, C12, C13, C33, C44."
+            )
         C66 = 0.5 * (C[0] - C[1])
-        C = np.array([[C[0], C[1], C[2],    0,    0,   0],
-                      [C[1], C[0], C[2],    0,    0,   0],
-                      [C[2], C[2], C[3],    0,    0,   0],
-                      [0,       0,    0, C[4],    0,   0],
-                      [0,       0,    0,    0, C[4],   0],
-                      [0,       0,    0,    0,    0, C66]])
+        C = np.array(
+            [
+                [C[0], C[1], C[2], 0, 0, 0],
+                [C[1], C[0], C[2], 0, 0, 0],
+                [C[2], C[2], C[3], 0, 0, 0],
+                [0, 0, 0, C[4], 0, 0],
+                [0, 0, 0, 0, C[4], 0],
+                [0, 0, 0, 0, 0, C66],
+            ]
+        )
     else:
-        raise ValueError("Unsupported crystal structure. Options are 'cubic' and 'hexagonal'.")
+        raise ValueError(
+            "Unsupported crystal structure. Options are 'cubic' and 'hexagonal'."
+        )
     return C
 
 
@@ -376,16 +476,29 @@ def test_bandpass(img, save_dir="./", window_size=128):
         img (np.ndarray): The image to filter."""
     # Process inputs
     c = np.array(img.shape) // 2
-    slc = (slice(c[0] - window_size // 2, c[0] + window_size // 2),
-           slice(c[1] - window_size // 2, c[1] + window_size // 2))
+    slc = (
+        slice(c[0] - window_size // 2, c[0] + window_size // 2),
+        slice(c[1] - window_size // 2, c[1] + window_size // 2),
+    )
     img = img[slc]
     low_sigmas = np.arange(0.25, 2.0, 0.25)  # high pass
     high_sigmas = np.arange(5.0, 40.0, 5.0)  # low pass
-    composite = np.zeros((len(low_sigmas) * img.shape[0], len(high_sigmas) * img.shape[1]))
-    composite_eq = np.zeros((len(low_sigmas) * img.shape[0], len(high_sigmas) * img.shape[1]))
-    composite_xcf = np.zeros((len(low_sigmas) * img.shape[0], len(high_sigmas) * img.shape[1]))
-    composite_xcf_eq = np.zeros((len(low_sigmas) * img.shape[0], len(high_sigmas) * img.shape[1]))
-    window = (signal.windows.tukey(img.shape[0], alpha=0.4)[:, None] * signal.windows.tukey(img.shape[1], alpha=0.4)[None, :])
+    composite = np.zeros(
+        (len(low_sigmas) * img.shape[0], len(high_sigmas) * img.shape[1])
+    )
+    composite_eq = np.zeros(
+        (len(low_sigmas) * img.shape[0], len(high_sigmas) * img.shape[1])
+    )
+    composite_xcf = np.zeros(
+        (len(low_sigmas) * img.shape[0], len(high_sigmas) * img.shape[1])
+    )
+    composite_xcf_eq = np.zeros(
+        (len(low_sigmas) * img.shape[0], len(high_sigmas) * img.shape[1])
+    )
+    window = (
+        signal.windows.tukey(img.shape[0], alpha=0.4)[:, None]
+        * signal.windows.tukey(img.shape[1], alpha=0.4)[None, :]
+    )
     sigmas = np.zeros((len(low_sigmas), len(high_sigmas), 2))
     for i, l in enumerate(low_sigmas):
         for j, h in enumerate(high_sigmas):
@@ -394,51 +507,79 @@ def test_bandpass(img, save_dir="./", window_size=128):
             image = (image - image.min()) / (image.max() - image.min())
             # Apply a tukey hann window
             image = image * window
-            composite[i*img.shape[0]:(i+1)*img.shape[0], j*img.shape[1]:(j+1)*img.shape[1]] = image
+            composite[
+                i * img.shape[0] : (i + 1) * img.shape[0],
+                j * img.shape[1] : (j + 1) * img.shape[1],
+            ] = image
             # Compute the cross-correlation
-            xcf = signal.fftconvolve(image, image[::-1, ::-1], mode='same').real
-            composite_xcf[i*img.shape[0]:(i+1)*img.shape[0], j*img.shape[1]:(j+1)*img.shape[1]] = xcf
+            xcf = signal.fftconvolve(image, image[::-1, ::-1], mode="same").real
+            composite_xcf[
+                i * img.shape[0] : (i + 1) * img.shape[0],
+                j * img.shape[1] : (j + 1) * img.shape[1],
+            ] = xcf
             # Equalize the histogram
             image = exposure.equalize_adapthist(image)
-            composite_eq[i*img.shape[0]:(i+1)*img.shape[0], j*img.shape[1]:(j+1)*img.shape[1]] = image
+            composite_eq[
+                i * img.shape[0] : (i + 1) * img.shape[0],
+                j * img.shape[1] : (j + 1) * img.shape[1],
+            ] = image
             # Compute the cross-correlation
-            xcf = signal.fftconvolve(image, image[::-1, ::-1], mode='same').real
-            composite_xcf_eq[i*img.shape[0]:(i+1)*img.shape[0], j*img.shape[1]:(j+1)*img.shape[1]] = xcf
+            xcf = signal.fftconvolve(image, image[::-1, ::-1], mode="same").real
+            composite_xcf_eq[
+                i * img.shape[0] : (i + 1) * img.shape[0],
+                j * img.shape[1] : (j + 1) * img.shape[1],
+            ] = xcf
             sigmas[i, j] = (l, h)
 
     # Now plot the two composite images using matplotlib with the sigmas as ticklabels
     fig, ax = plt.subplots(2, 2, figsize=(20, 20))
-    ax[0, 0].imshow(composite, cmap='gray')
-    ax[0, 0].set_xticks(np.arange(0, composite.shape[1], img.shape[1]) + img.shape[1] // 2)
+    ax[0, 0].imshow(composite, cmap="gray")
+    ax[0, 0].set_xticks(
+        np.arange(0, composite.shape[1], img.shape[1]) + img.shape[1] // 2
+    )
     ax[0, 0].set_xticklabels(high_sigmas)
-    ax[0, 0].set_yticks(np.arange(0, composite.shape[0], img.shape[0]) + img.shape[0] // 2)
+    ax[0, 0].set_yticks(
+        np.arange(0, composite.shape[0], img.shape[0]) + img.shape[0] // 2
+    )
     ax[0, 0].set_yticklabels(low_sigmas)
     ax[0, 0].set_title("Difference of Gaussians")
     ax[0, 0].set_xlabel("High sigma")
     ax[0, 0].set_ylabel("Low sigma")
 
-    ax[0, 1].imshow(composite_eq, cmap='gray')
-    ax[0, 1].set_xticks(np.arange(0, composite.shape[1], img.shape[1]) + img.shape[1] // 2)
+    ax[0, 1].imshow(composite_eq, cmap="gray")
+    ax[0, 1].set_xticks(
+        np.arange(0, composite.shape[1], img.shape[1]) + img.shape[1] // 2
+    )
     ax[0, 1].set_xticklabels(high_sigmas)
-    ax[0, 1].set_yticks(np.arange(0, composite.shape[0], img.shape[0]) + img.shape[0] // 2)
+    ax[0, 1].set_yticks(
+        np.arange(0, composite.shape[0], img.shape[0]) + img.shape[0] // 2
+    )
     ax[0, 1].set_yticklabels(low_sigmas)
     ax[0, 1].set_title("Difference of Gaussians + Equalization")
     ax[0, 1].set_xlabel("High sigma")
     ax[0, 1].set_ylabel("Low sigma")
 
-    ax[1, 0].imshow(composite_xcf, cmap='gray')
-    ax[1, 0].set_xticks(np.arange(0, composite.shape[1], img.shape[1]) + img.shape[1] // 2)
+    ax[1, 0].imshow(composite_xcf, cmap="gray")
+    ax[1, 0].set_xticks(
+        np.arange(0, composite.shape[1], img.shape[1]) + img.shape[1] // 2
+    )
     ax[1, 0].set_xticklabels(high_sigmas)
-    ax[1, 0].set_yticks(np.arange(0, composite.shape[0], img.shape[0]) + img.shape[0] // 2)
+    ax[1, 0].set_yticks(
+        np.arange(0, composite.shape[0], img.shape[0]) + img.shape[0] // 2
+    )
     ax[1, 0].set_yticklabels(low_sigmas)
     ax[1, 0].set_title("Cross-correlation of DoG")
     ax[1, 0].set_xlabel("High sigma")
     ax[1, 0].set_ylabel("Low sigma")
 
-    ax[1, 1].imshow(composite_xcf_eq, cmap='gray')
-    ax[1, 1].set_xticks(np.arange(0, composite.shape[1], img.shape[1]) + img.shape[1] // 2)
+    ax[1, 1].imshow(composite_xcf_eq, cmap="gray")
+    ax[1, 1].set_xticks(
+        np.arange(0, composite.shape[1], img.shape[1]) + img.shape[1] // 2
+    )
     ax[1, 1].set_xticklabels(high_sigmas)
-    ax[1, 1].set_yticks(np.arange(0, composite.shape[0], img.shape[0]) + img.shape[0] // 2)
+    ax[1, 1].set_yticks(
+        np.arange(0, composite.shape[0], img.shape[0]) + img.shape[0] // 2
+    )
     ax[1, 1].set_yticklabels(low_sigmas)
     ax[1, 1].set_title("Cross-correlation of DoG + Equalization")
     ax[1, 1].set_xlabel("High sigma")
@@ -449,15 +590,15 @@ def test_bandpass(img, save_dir="./", window_size=128):
     plt.close(fig)
 
 
-def view(*imgs, cmap='gray', titles=None, save_dir=None):
+def view(*imgs, cmap="gray", titles=None, save_dir=None):
     n = len(imgs)
-    fig, axes = plt.subplots(1, n, figsize=(3*n, 3))
+    fig, axes = plt.subplots(1, n, figsize=(3 * n, 3))
     if n == 1:
         axes = [axes]
     for i, img in enumerate(imgs):
         ax = axes[i]
         ax.imshow(img, cmap=cmap)
-        ax.axis('off')
+        ax.axis("off")
         if titles is not None:
             ax.set_title(titles[i])
     plt.tight_layout()
@@ -468,7 +609,16 @@ def view(*imgs, cmap='gray', titles=None, save_dir=None):
         plt.show()
 
 
-def view_tensor_images(e, cmap="jet", tensor_type="strain", xy=None, save_dir=None, save_name="", show="all"):
+def view_tensor_images(
+    e,
+    cmap="jet",
+    tensor_type="strain",
+    xy=None,
+    save_dir=None,
+    save_name="",
+    show="all",
+    clip="global",
+):
     """View individual tensor components of a grid of tensors (such as the strain tensor from HREBSD).
 
     Args:
@@ -478,7 +628,10 @@ def view_tensor_images(e, cmap="jet", tensor_type="strain", xy=None, save_dir=No
         xy (tuple): The point to plot on the tensor components.
         save_dir (str): The directory to save the image.
         save_name (str): The name of the image. The filename will be save_name + tensor_type + ".png".
-        show (str): The tensor components to show. Options are "all", "diag", "upper", or "lower"."""
+        show (str): The tensor components to show. Options are "all", "diag", "upper", or "lower".
+        clip (str): The clipping method. Options are "global" or "local". If "global", the min and max values are taken from the entire tensor.
+                    If "local", the min and max values are taken from each tensor component.
+    """
     # Process tensor type
     if tensor_type == "strain":
         var = r"$\epsilon$"
@@ -499,33 +652,44 @@ def view_tensor_images(e, cmap="jet", tensor_type="strain", xy=None, save_dir=No
         bad = ["10", "20", "21"]
     elif show == "lower":
         bad = ["01", "02", "12"]
+    if clip == "global":
+        vmin = np.percentile(e, 1)
+        vmax = np.percentile(e, 99)
     fig, ax = plt.subplots(3, 3, figsize=(12.2, 12))
-    plt.subplots_adjust(wspace=0.35, hspace=0.01, left=0.01, right=0.93, top=0.99, bottom=0.01)
+    plt.subplots_adjust(
+        wspace=0.35, hspace=0.01, left=0.01, right=0.93, top=0.99, bottom=0.01
+    )
     for i in range(3):
         for j in range(3):
             if "%i%i" % (i, j) in bad:
                 # Turn off the axis
-                ax[i, j].axis('off')
+                ax[i, j].axis("off")
                 continue
             elif tensor_type == "homography":
                 if i == 2 and j == 2:
-                    ax[i, j].axis('off')
+                    ax[i, j].axis("off")
                     continue
-            vmin, vmax = np.percentile(e[..., i, j], [1, 99])
+            if clip == "local":
+                vmin = np.percentile(e[..., i, j], 0.1)
+                vmax = np.percentile(e[..., i, j], 99.9)
             if tensor_type == "homography":
-                _0 = ax[i, j].imshow(e[..., 3*i + j], cmap=cmap, vmin=vmin, vmax=vmax)
+                _0 = ax[i, j].imshow(e[..., 3 * i + j], cmap=cmap, vmin=vmin, vmax=vmax)
             else:
                 _0 = ax[i, j].imshow(e[..., i, j], cmap=cmap, vmin=vmin, vmax=vmax)
-            ax[i, j].axis('off')
-            ax[i, j].set_title(var + r"$_{%i%i}$" % (i+1, j+1), fontsize=20)
+            ax[i, j].axis("off")
+            ax[i, j].set_title(var + r"$_{%i%i}$" % (i + 1, j + 1), fontsize=20)
             if xy is not None:
-                ax[i, j].plot(xy[1], xy[0], 'kx', markersize=10)
+                ax[i, j].plot(xy[1], xy[0], "kx", markersize=10)
             loc = ax[i, j].get_position()
             cax = fig.add_axes([loc.x1 + 0.01, loc.y0, 0.01, loc.height])
-            cbar = fig.colorbar(_0, cax=cax, orientation='vertical')
+            cbar = fig.colorbar(_0, cax=cax, orientation="vertical")
             cbar.formatter.set_powerlimits((-1, 1))
     if save_dir is not None:
-        plt.savefig(os.path.join(save_dir, f"{save_name}{tensor_type}.png"), dpi=300, transparent=True)
+        plt.savefig(
+            os.path.join(save_dir, f"{save_name}{tensor_type}.png"),
+            dpi=300,
+            transparent=True,
+        )
         plt.close(fig)
     plt.show()
 
@@ -533,7 +697,9 @@ def view_tensor_images(e, cmap="jet", tensor_type="strain", xy=None, save_dir=No
 def shade_ipf(ipf, greyscale):
     # Process greyscale
     greyscale = greyscale.astype(np.float32)
-    greyscale = ((greyscale - greyscale.min()) / (greyscale.max() - greyscale.min())).reshape(greyscale.shape + (1,))
+    greyscale = (
+        (greyscale - greyscale.min()) / (greyscale.max() - greyscale.min())
+    ).reshape(greyscale.shape + (1,))
 
     # Shade the IPF
     ipf = ipf.astype(np.float32)
@@ -550,7 +716,14 @@ def make_video(folder, save_path):
     fps = 24
 
     fourcc = cv2.VideoWriter_fourcc(*"h264")
-    images = sorted([img for img in os.listdir(folder) if img.endswith(ext) and img[:len(prefix)] == prefix], key=lambda x: int(x.split(".")[0].replace(prefix, "")))
+    images = sorted(
+        [
+            img
+            for img in os.listdir(folder)
+            if img.endswith(ext) and img[: len(prefix)] == prefix
+        ],
+        key=lambda x: int(x.split(".")[0].replace(prefix, "")),
+    )
     frame = cv2.imread(os.path.join(folder, images[0]))
     h, w, l = frame.shape
     video = cv2.VideoWriter(save_path, fourcc, fps, (w, h))

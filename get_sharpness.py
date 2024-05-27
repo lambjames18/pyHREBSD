@@ -41,20 +41,21 @@ def _get_sharpness_torch(ebsd_data: namedtuple, batch_size: int = 8, lazy=True) 
 
         # Calculate sharpness
         for i in tqdm(range(len(imgs_split)), desc='Calculating sharpness', unit='batches'):
-            shp = torch.cat((shp, _calc_sharpness_torch(imgs_split[i])), dim=0)
-        
+            shp = torch.cat((shp, _calc_sharpness_torch(imgs_split[i])))
+
     else:
         # Put into batches
         idx = np.arange(ebsd_data.nPatterns)
         idx_split = np.array_split(idx, ebsd_data.nPatterns // batch_size)  # (M, batch_size) where M is the number of batches and batch_size is not a constant
         args = [(ebsd_data, idx) for idx in idx_split]
 
+        # shp = torch.tensor([], dtype=torch.float32).to(device)
         shp = np.array([])
         for i in tqdm(range(len(idx_split)), desc='Calculating sharpness', unit='batches'):
-            shp = torch.cat((shp, _calc_sharpness_torch_lazy(args[i])), dim=0)
+            shp = np.concatenate((shp, _calc_sharpness_torch_lazy(args[i]).cpu().numpy()))
 
     # Convert to numpy and reshape if necessary
-    shp = np.squeeze(shp.cpu().numpy())
+    shp = np.squeeze(shp)
     return shp
 
 
@@ -74,9 +75,8 @@ def _calc_sharpness_torch_lazy(args: tuple) -> torch.Tensor:
     fshift = torch.fft.fftshift(f)
     AF = torch.abs(fshift)
     thresh = torch.amax(AF, dim=(1, 2), keepdim=True) / 2500
-    th = torch.sum(fshift > thresh, dim=(1, 2), keepdim=True)
-    return th / (pats.shape[2] * pats.shape[3])
-
+    th = torch.sum(fshift > thresh, dim=(1, 2))
+    return th / (pats.shape[1] * pats.shape[2])
 
 
 def _calc_sharpness_torch(imgs: torch.Tensor) -> torch.Tensor:
@@ -93,12 +93,12 @@ def _calc_sharpness_torch(imgs: torch.Tensor) -> torch.Tensor:
     AF = torch.abs(fshift)
     thresh = torch.amax(AF, dim=(1, 2), keepdim=True) / 2500
     th = torch.sum(fshift > thresh, dim=(1, 2), keepdim=True)
-    return th / (imgs.shape[2] * imgs.shape[3])
+    return th / (imgs.shape[1] * imgs.shape[2])
 
 
 def _get_sharpness_numpy(ebsd_data: namedtuple, batch_size: int = 8, parallel: bool = False, lazy = True) -> np.ndarray:
     """Calculates the sharpness of an image/stack of images.
-    
+
     Args:
         imgs (np.ndarray): The images to calculate the sharpness of. (H, W) or (N, H, W) or (N0, N1, H, W)
         batch_size (int): The number of images to process at once.
@@ -138,7 +138,7 @@ def _get_sharpness_numpy(ebsd_data: namedtuple, batch_size: int = 8, parallel: b
 
 def _calc_sharpness_numpy_lazy(args: tuple) -> np.ndarray:
     """Calculates the sharpness of an image/stack of images.
-    
+
     Args:
         args (tuple): The arguments to calculate the sharpness of. (ebsd_data, idx)
 
@@ -193,28 +193,29 @@ def get_sharpness(ebsd_data: namedtuple, use_torch: bool = False, batch_size: in
         return _get_sharpness_numpy(ebsd_data, batch_size, parallel, lazy)
 
 
-# TODO: change the pattern object to a class that has a read_patterns method
+# TODO: numpy and torch do not give the same results
 
 if __name__ == "__main__":
-    ang = "E:/SiGe/ScanA.ang"
-    up2 = "E:/SiGe/ScanA.up2"
+    ang = "E:/GaN/GaN.ang"
+    up2 = "E:/GaN/GaN.up2"
     ebsd_data = Data.EBSDData(up2, ang)
 
     t0 = time.time()
-    sharpness = get_sharpness(ebsd_data, use_torch=True, batch_size=8, lazy=True, parallel=False)
+    sharpness0 = get_sharpness(ebsd_data, use_torch=True, batch_size=16, lazy=True, parallel=False).reshape(200, 200)
     print("Torch lazy:", time.time() - t0)
 
     t0 = time.time()
-    sharpness = get_sharpness(ebsd_data, use_torch=True, batch_size=8, lazy=False, parallel=False)
-    print("Torch:", time.time() - t0)
-
-    t0 = time.time()
-    sharpness = get_sharpness(ebsd_data, use_torch=False, batch_size=8, lazy=True, parallel=False)
+    sharpness2 = get_sharpness(ebsd_data, use_torch=False, batch_size=16, lazy=True, parallel=False).reshape(200, 200)
     print("Numpy lazy:", time.time() - t0)
 
-    t0 = time.time()
-    sharpness = get_sharpness(ebsd_data, use_torch=False, batch_size=8, lazy=False, parallel=False)
-    print("Numpy:", time.time() - t0)
+    print(np.allclose(sharpness0, sharpness2, atol=1e-5, rtol=1e-5))
+    
+    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    ax[0].imshow(sharpness0)
+    ax[0].set_title("Torch lazy")
+    ax[1].imshow(sharpness2)
+    ax[1].set_title("Numpy lazy")
+    plt.show()
 
     # sharpness = sharpness.reshape(shape)
     # print(f"Saving sharpness to {dirname}")

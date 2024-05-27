@@ -1,5 +1,6 @@
 import numpy as np
 from scipy import signal, ndimage, interpolate
+from skimage import exposure
 
 
 class Spline:
@@ -47,80 +48,40 @@ class Spline:
     def gradient(self):
         dx = self(self.coords[0], self.coords[1], dx=1, dy=0, grid=False, normalize=False)
         dy = self(self.coords[0], self.coords[1], dx=0, dy=1, grid=False, normalize=False)
-        dxy = np.vstack((dx, dy)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
+        dxy = np.vstack((dx, dy)).reshape(2, 1, -1).transpose(1, 0, 2)  # 1x2xN
         return dxy
 
 
-def get_GR(R, subset_slice, PC):
-    # Get coordinates
-    x = np.arange(R.shape[1]) - PC[0]
-    y = np.arange(R.shape[0]) - PC[1]
-    X, Y = np.meshgrid(x, y)
-    xi = np.array([Y[subset_slice].flatten(), X[subset_slice].flatten()])
+def process_pattern(img: np.ndarray, sigma: float = 0.0, equalize: bool = True, truncate: bool = True) -> np.ndarray:
+    """Cleans patterns by equalizing the histogram and normalizing.
 
-    # Compute the intensity gradients of the subset
-    spline = interpolate.RectBivariateSpline(x, y, R, kx=5, ky=5)
-    GRx = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
-    GRy = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
-    GR = np.vstack((GRx, GRy)).reshape(2, 1, -1).transpose(1, 0, 2)
-    return GR
+    Args:
+        img (np.ndarray): The patterns to clean. (H, W)
+        equalize (bool): Whether to equalize the histogram.
+        high_pass (bool): Whether to apply a high-pass filter.
+        truncate (bool): Whether to truncate the patterns.
 
+    Returns:
+        np.ndarray: The cleaned patterns. (N, H, W)"""
+    # Process inputs
+    img = img.astype(np.float32)
+    median = np.percentile(img, 50)
+    low_percentile = np.percentile(img, 1)
+    high_percentile = np.percentile(img, 99)
 
-if __name__ == "__main__":
-    import utilities
-    import matplotlib.pyplot as plt
-    import pyHREBSD
-    import timeit
+    # Process the patterns
+    if truncate:
+        img[img < low_percentile] = median
+        img[img > high_percentile] = median
+    img = (img - img.min()) / (img.max() - img.min())
+    background = ndimage.gaussian_filter(img.mean(axis=0), img.shape[-1] / 10)
+    img = img - background
+    img = (img - img.min()) / (img.max() - img.min())
+    if equalize:
+        img = exposure.equalize_adapthist(img)
+        img = (img - img.min()) / (img.max() - img.min())
+    if sigma > 0.0:
+        img = ndimage.gaussian_filter(img, sigma)
+        img = (img - img.min()) / (img.max() - img.min())
 
-    save_name = f"SiGeScanA"
-    up2 = "E:/SiGe/ScanA.up2"
-    ang = "E:/SiGe/ScanA.ang"
-
-    # Geometry
-    pixel_size = 13.0  # The pixel size in um
-    sample_tilt = 70.0  # The sample tilt in degrees
-    detector_tilt = 10.1  # The detector tilt in degrees
-
-    # Pattern processing
-    truncate = True
-    equalize = False
-    DoG_sigmas = (1.0, 30.0)  # The sigmas for the difference of Gaussians filter
-
-    # Initial guess
-    initial_subset_size = 2048  # The size of the subset, must be a power of 2
-    guess_type = "partial"  # The type of initial guess to use, "full", "partial", or "none"
-
-    # Subpixel registration
-    h_center = "image"  # The homography center for deformation, "pattern" or "image"
-    max_iter = 50  # The maximum number of iterations for the subpixel registration
-    conv_tol = 1e-4  # The convergence tolerance for the subpixel registration
-    subset_shape = "rectangle"  # The shape of the subset for the subpixel registration, "rectangle", "ellipse", or "donut"
-    subset_size = (1638, 1638) # The size of the subset for the subpixel registration, (H, W) for "rectangle", (a, b) for "ellipse", or (r_in, r_out) for "donut"
-
-    # Reference index
-    x0 = 0  # The index of the reference pattern
-
-    # Run the calc or load the results
-    calc = True
-    ### Parameters ###
-
-
-    # Read in data
-    pat_obj, ang_data = utilities.get_scan_data(up2, ang)
-
-    idx = np.arange(75, 95, 5)
-    idx = np.array([0, 1])
-    pats = utilities.get_patterns(pat_obj, idx=idx).astype(float)
-    pats = utilities.process_patterns(pats, equalize=equalize, truncate=truncate)
-    PC = (1024, 1024)
-
-    subset_slice = (slice(int(PC[1] - subset_size[0] / 2), int(PC[1] + subset_size[0] / 2)),
-                    slice(int(PC[0] - subset_size[1] / 2), int(PC[0] + subset_size[1] / 2)))
-
-    spline = Spline(pats[0], 5, 5, ang_data.pc, subset_slice)
-    t0 = timeit.timeit(lambda: spline.gradient(), number=10) / 10
-    t1 = timeit.timeit(lambda: get_GR(pats[0], subset_slice, ang_data.pc), number=10) / 10
-    print(f"Spline: {t0:.2e} s")
-    print(f"GR: {t1:.2e} s")
-
-
+    return img
