@@ -9,7 +9,6 @@ import dill
 
 import utilities
 import warp
-import interp
 import conversions
 
 # Type hints
@@ -214,7 +213,7 @@ class ICGNOptimizer:
         X, Y = np.meshgrid(x, y)
         xi = np.array([Y[self.subset_slice].flatten(), X[self.subset_slice].flatten()])
         # Compute the intensity gradients of the subset
-        spline = interp.Spline(self.R, 5, 5, self.h0, self.subset_slice)
+        spline = warp.Spline(self.R, 5, 5, self.h0, self.subset_slice)
         GR = spline.gradient()
         r = spline(xi[0], xi[1], grid=False, normalize=False).flatten()
         # spline = interpolate.RectBivariateSpline(x, y, self.R, kx=5, ky=5)
@@ -328,11 +327,11 @@ class ICGNOptimizer:
         # T_spline = interpolate.RectBivariateSpline(
         #     self.precomputed.x, self.precomputed.y, normalize(T), kx=5, ky=5
         # )
-        T_spline = interp.Spline(T, 5, 5, self.h0, self.subset_slice)
+        T_spline = warp.Spline(T, 5, 5, self.h0, self.subset_slice)
         # Run initial guess
         # Window and normalize the target
         t_init = window_and_normalize(T[self.subset_slice])
-        T_spline_init = interp.Spline(t_init, 5, 5, self.PC, self.guess_subset_slice)
+        T_spline_init = warp.Spline(t_init, 5, 5, self.PC, self.guess_subset_slice)
         # Do the angle search first
         t_init_fft = np.fft.fftshift(np.fft.fft2(t_init))
         t_init_FMT, _ = FMT(
