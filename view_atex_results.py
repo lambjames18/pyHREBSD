@@ -19,6 +19,8 @@ e22 = data[:, 7]
 e23 = data[:, 8]
 e33 = data[:, 9]
 
+e_tetragonal = (e11 + e22) / 2 - e33
+
 color = np.array([(254, 188, 17) for i in range(len(ids))])
 color[e22 < -0.001] = (0, 54, 96)
 color = color / 255
@@ -32,17 +34,15 @@ ax[1, 1].scatter(x, e22, c=color, marker="s", label=r"$\epsilon_{22}$")
 ax[1, 2].scatter(x, e23, c=color, marker="s", label=r"$\epsilon_{23}$")
 # ax[2, 0].scatter(x, dis, c=color, marker="s", label=r"$\phi$")
 ax[2, 0].axis("off")
-ax[2, 1].axis("off")
+ax[2, 1].scatter(x, e_tetragonal, c=color, marker="s", label=r"$\epsilon_{tetragonal}$")
 ax[2, 2].scatter(x, e33, c=color, marker="s", label=r"$\epsilon_{33}$")
 
 
-for a in [ax[0, 0], ax[0, 1], ax[0, 2], ax[1, 1], ax[1, 2], ax[2, 2]]:
+for a in [ax[0, 0], ax[0, 1], ax[0, 2], ax[1, 1], ax[1, 2], ax[2, 2], ax[2, 1]]:
     a.set_ylim(-0.0018, 0.0018)
     # a.set_ylim(-0.018, 0.018)
     utilities.standardize_axis(a)
     utilities.make_legend(a)
-
-ax[0, 0].sharey(ax[0, 1])
 
 # ax[2, 0].set_ylim(0, 0.05)
 # standardize_axis(ax[2, 0])

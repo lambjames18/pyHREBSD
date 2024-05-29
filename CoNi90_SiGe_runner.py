@@ -2,6 +2,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 
+import rotations
 import utilities
 import get_homography
 import conversions
@@ -29,6 +30,9 @@ if __name__ == "__main__":
     truncate = True
     # Set the small strain flag
     small_strain = False
+    # Set the stiffness tensor
+    C = utilities.get_stiffness_tensor(165.64, 63.94, 79.51, structure="cubic")
+    # C = utilities.get_stiffness_tensor(129.2, 47.9, 67.0, structure="cubic")
     # Calculate or read
     calc = False
     # Number of cores, max iterations, and convergence tolerance if calculating
@@ -74,16 +78,18 @@ if __name__ == "__main__":
     else:
         optimizer.load(f"results/{name}_optimizer.pkl")
         # optimizer.load_results("results/CoNi90_DED_ICGN.pkl")
-    optimizer.PC = (optimizer.PC[0] - optimizer.pat_obj.patshape[0] / 2,
-                    optimizer.PC[1] - optimizer.pat_obj.patshape[1] / 2,
-                    optimizer.PC[2])
+    # optimizer.PC = (optimizer.PC[0] - optimizer.pat_obj.patshape[0] / 2,
+    #                 optimizer.PC[1] - optimizer.pat_obj.patshape[1] / 2,
+    #                 optimizer.PC[2])
     h = optimizer.results.homographies
     num_iter = optimizer.results.num_iter
     residuals = optimizer.results.residuals
     norms = optimizer.results.norms
     F = conversions.h2F(h, optimizer.PC)
-    print(F[..., 2, 2].mean(), F[..., 2, 2].max(), F[..., 2, 2].min())
-    e, w = conversions.F2strain(F, None, small_strain=small_strain)
+    e, w, s = conversions.F2strain(F, C, small_strain=small_strain)
+    euler = np.array([0.0, 90 + sample_tilt - detector_tilt, 0.0], dtype=float)
+    Psr = rotations.eu2om(euler * np.pi / 180).T  # Rotation matrix from SEM to sample reference frame
+    e = np.matmul(Psr, np.matmul(e, Psr.T))  # Convert strain tensor to sample reference frame
     # Save the results
     # e = optimizer.results.e
 
@@ -93,13 +99,16 @@ if __name__ == "__main__":
     e22 = e[0, :, 1, 1]
     e23 = e[0, :, 1, 2]
     e33 = e[0, :, 2, 2]
+    e_tetra = (e11 + e22) / 2 - e33
     residuals = optimizer.results.residuals[0]
     num_iter = optimizer.results.num_iter[0]
     norms = optimizer.results.norms[0]
     x = np.arange(len(e11))
 
-    mask = e11 < -0.002
-    print(name, e11[mask].mean(), e22[mask].mean())
+    max_diff = e13.max() - e13
+    min_diff = e13 - e13.min()
+    mask = max_diff > min_diff
+
     color = np.array([(254, 188, 17) for _ in range(len(x))])
     color[mask] = (0, 54, 96)
     color = color / 255
@@ -113,17 +122,18 @@ if __name__ == "__main__":
     ax[2, 2].scatter(x, e33, c=color, marker="s", label=r"$\epsilon_{33}$")
     ax[1, 0].scatter(x, residuals, c=color, marker="s", label="Residuals")
     ax[2, 0].scatter(x, num_iter, c=color, marker="s", label="Num Iterations")
-    ax[2, 1].scatter(x, norms, c=color, marker="s", label="Norms")
+    ax[2, 1].scatter(x, e_tetra, c=color, marker="s", label=r"$\epsilon_{tetragonal}$")
+    # ax[2, 1].scatter(x, norms, c=color, marker="s", label="Norms")
 
-    for a in [ax[0, 0], ax[0, 1], ax[0, 2], ax[1, 1], ax[1, 2], ax[2, 2]]:
-        a.set_ylim(-0.018, 0.018)
+    for a in [ax[0, 0], ax[0, 1], ax[0, 2], ax[1, 1], ax[1, 2], ax[2, 2], ax[2, 1]]:
+        a.set_ylim(-0.022, 0.022)
         # a.set_ylim(-0.0018, 0.0018)
         utilities.standardize_axis(a)
         utilities.make_legend(a)
 
-    for a in [ax[1, 0], ax[2, 0], ax[2, 1]]:
+    for a in [ax[1, 0], ax[2, 0]]:#, ax[2, 1]]:
         utilities.standardize_axis(a)
         utilities.make_legend(a)
 
     plt.subplots_adjust(wspace=0.3, hspace=0.15, left=0.07, right=0.99, top=0.99, bottom=0.05)
-    plt.savefig(f"E:/SiGe/{name}.png", dpi=300)
+    plt.savefig(f"E:/SiGe/{name}_Sample_PC.png", dpi=300)
