@@ -7,8 +7,7 @@ import get_homography
 if __name__ == "__main__":
     ############################
     # Load the pattern object
-    # up2 = "E:/GaN/GaN_2048x2048.up2"
-    up2 = "G:20240425_27146_2048x2048.up2"
+    up2 = "E:/GaN/GaN_2048x2048.up2"
     ang = "E:/GaN/GaN.ang"
     name = "GaN"
     # Set the geometry parameters

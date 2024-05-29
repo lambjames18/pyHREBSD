@@ -1,26 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-
-
-def standardize_axis(ax, **kwargs):
-    kwargs["labelsize"] = kwargs.get("labelsize", 20)
-    kwargs["labelcolor"] = kwargs.get("labelcolor", "k")
-    kwargs["direction"] = kwargs.get("direction", "in")
-    kwargs["top"] = kwargs.get("top", True)
-    kwargs["right"] = kwargs.get("right", True)
-    ax.tick_params(axis="both", which="both", **kwargs)
-    ax.grid(alpha=0.3, which="major")
-    ax.grid(alpha=0.1, which="minor")
-
-
-def make_legend(ax, **kwargs):
-    # kwargs["bbox_to_anchor"] = kwargs.get("bbox_to_anchor", (1.03, 1.05))
-    # kwargs["loc"] = kwargs.get("loc", "upper right")
-    kwargs["fontsize"] = kwargs.get("fontsize", 18)
-    kwargs["shadow"] = kwargs.get("shadow", True)
-    kwargs["framealpha"] = kwargs.get("framealpha", 1)
-    kwargs["fancybox"] = kwargs.get("fancybox", False)
-    ax.legend(**kwargs)
+import utilities
 
 
 header_lines = 17
@@ -57,9 +37,10 @@ ax[2, 2].scatter(x, e33, c=color, marker="s", label=r"$\epsilon_{33}$")
 
 
 for a in [ax[0, 0], ax[0, 1], ax[0, 2], ax[1, 1], ax[1, 2], ax[2, 2]]:
-    a.set_ylim(-0.0016, 0.0016)
-    standardize_axis(a)
-    make_legend(a)
+    a.set_ylim(-0.0018, 0.0018)
+    # a.set_ylim(-0.018, 0.018)
+    utilities.standardize_axis(a)
+    utilities.make_legend(a)
 
 ax[0, 0].sharey(ax[0, 1])
 
@@ -67,5 +48,5 @@ ax[0, 0].sharey(ax[0, 1])
 # standardize_axis(ax[2, 0])
 # make_legend(ax[2, 0],loc="lower right")
 
-plt.tight_layout()
-plt.savefig("E:/SiGe/ScanA_AdaptPC-ATEX_results.png", dpi=300)
+plt.subplots_adjust(wspace=0.3, hspace=0.15, left=0.07, right=0.99, top=0.99, bottom=0.05)
+plt.savefig("E:/SiGe/ScanA_ATEX_results_test.png", dpi=300)

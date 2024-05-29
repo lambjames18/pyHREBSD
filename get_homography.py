@@ -9,6 +9,7 @@ import dill
 
 import utilities
 import warp
+import interp
 import conversions
 
 # Type hints
@@ -115,6 +116,12 @@ class ICGNOptimizer:
             )
         self.num_points = self.roi.sum()
 
+    def get_roi_bbox(self) -> tuple:
+        """Get the bounding box of the region of interest."""
+        r0, c0 = np.array(np.where(self.roi)).min(axis=1)
+        r1, c1 = np.array(np.where(self.roi)).max(axis=1)
+        return (r0, r1, c0, c1)
+
     def set_homography_subset(self, size: NUMBER, center: tuple | str) -> None:
         """Set the homography center and the size of the subset"""
         if type(center) == str and center.lower() == "image":
@@ -158,9 +165,42 @@ class ICGNOptimizer:
             slice(c[1] - subset_size // 2, c[1] + subset_size // 2),
         )
 
-    def xy2idx(self, row: NUMBER, col: NUMBER) -> NUMBER:
+    def print_setup(self) -> None:
+        """Print the setup of the homography optimization."""
+        r0, r1, c0, c1 = self.get_roi_bbox()
+        x0_rc = self.idx2rc(self.x0)
+        print("***********************************")
+        print("Dataset information:")
+        print(f"\tPattern size: {self.pat_obj.patshape} pixels")
+        print(f"\tScan shape: {self.scan_shape} pixels")
+        print(f"\tPC: {self.PC}")
+        print(f"\tSample-to-detector tilt: {self.tilt} degrees")
+        print("Optimization parameters:")
+        print(f"\tROI: Rows {r0} to {r1}, Columns {c0} to {c1}")
+        print(f"\tROI: {self.pidx[r0, c0]} to {self.pidx[r1, c1]} (indices)")
+        print(f"\tReference location: {x0_rc} (row/column)")
+        print(f"\tReference location: {self.x0} (index)")
+        print(f"\tSubset size: {self.subset_size} pixels")
+        print(f"\tHomography center: {self.h0}")
+        print(f"\tROI shape: {self.roi.shape}")
+        print(f"\tNumber of points: {self.num_points}")
+        print(f"\tInitial guess type: {self.init_type}")
+        print(f"\tMaximum iterations: {self.max_iter}")
+        print(f"\tConvergence tolerance: {self.conv_tol}")
+        print("Image processing parameters:")
+        print(f"\tImage processing kwargs: {self.image_processing_kwargs}")
+        print(f"\tSmall strain: {self.small_strain}")
+        print("***********************************")
+
+    def rc2idx(self, row: NUMBER, col: NUMBER) -> NUMBER:
         """Convert x, y coordinates to an index."""
         return row * self.scan_shape[1] + col
+
+    def idx2rc(self, idx: NUMBER) -> tuple:
+        """Convert an index to row, column coordinates."""
+        row = idx // self.scan_shape[1]
+        col = idx % self.scan_shape[1]
+        return row, col
 
     def reference_precompute(self) -> None:
         """Precompute arrays/values for the reference subset for the IC-GN algorithm."""
@@ -174,11 +214,14 @@ class ICGNOptimizer:
         X, Y = np.meshgrid(x, y)
         xi = np.array([Y[self.subset_slice].flatten(), X[self.subset_slice].flatten()])
         # Compute the intensity gradients of the subset
-        spline = interpolate.RectBivariateSpline(x, y, self.R, kx=5, ky=5)
-        GRx = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
-        GRy = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
-        GR = np.vstack((GRx, GRy)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
-        r = spline(xi[0], xi[1], grid=False).flatten()
+        spline = interp.Spline(self.R, 5, 5, self.h0, self.subset_slice)
+        GR = spline.gradient()
+        r = spline(xi[0], xi[1], grid=False, normalize=False).flatten()
+        # spline = interpolate.RectBivariateSpline(x, y, self.R, kx=5, ky=5)
+        # GRx = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
+        # GRy = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
+        # GR = np.vstack((GRx, GRy)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
+        # r = spline(xi[0], xi[1], grid=False).flatten()
         r_zmsv = np.sqrt(((r - r.mean()) ** 2).sum())
         r = (r - r.mean()) / r_zmsv
         # Compute the jacobian of the shape function
@@ -247,8 +290,11 @@ class ICGNOptimizer:
             with mpire.WorkerPool(n_jobs=n_cores, use_dill=True) as pool:
                 out = pool.map(self.run_single, [i for i in indices], progress_bar=True, iterable_len=self.num_points)
         else:
-            out = np.array([self.run_single(idx) for idx in tqdm(indices)])
+            out = [self.run_single(idx) for idx in tqdm(indices)]
         # Store the results
+        self.process_results(out)
+
+    def process_results(self, out) -> None:
         p = np.zeros(self.scan_shape + (8,), dtype=float)
         num_iter = np.zeros(self.scan_shape, dtype=int)
         residuals = np.zeros(self.scan_shape, dtype=float)
@@ -258,8 +304,9 @@ class ICGNOptimizer:
         residuals[self.roi] = np.array([o[2] for o in out])
         norms[self.roi] = np.array([o[3] for o in out])
         # Get the deformation gradient and the strain
+        PC_temp = (self.PC[0] - self.pat_obj.patshape[0] / 2, self.PC[1] - self.pat_obj.patshape[1] / 2, self.PC[2])
         F = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
-        F[self.roi] = conversions.h2F(p[self.roi], self.PC)
+        F[self.roi] = conversions.h2F(p[self.roi], PC_temp)
         e = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
         w = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
         if self.C is not None:
@@ -271,20 +318,21 @@ class ICGNOptimizer:
             s = None
         e[self.roi] = E
         w[self.roi] = R
-        self.results = ICGNResults(num_iter, residuals, norms, p, F, e, w, s)
+        self.results = ICGNResults(num_iter, residuals, norms, p, F, e, w, s)      
 
     def run_single(self, idx: int) -> np.ndarray:
         """Run the homography optimization for a single point."""
         # Get the target image and process it
         T = utilities.get_pattern(self.pat_obj, idx)
         T = utilities.process_pattern(T, **self.image_processing_kwargs)
-        # Get coordinates
-        T_spline = interpolate.RectBivariateSpline(
-            self.precomputed.x, self.precomputed.y, normalize(T), kx=5, ky=5
-        )
+        # T_spline = interpolate.RectBivariateSpline(
+        #     self.precomputed.x, self.precomputed.y, normalize(T), kx=5, ky=5
+        # )
+        T_spline = interp.Spline(T, 5, 5, self.h0, self.subset_slice)
         # Run initial guess
         # Window and normalize the target
         t_init = window_and_normalize(T[self.subset_slice])
+        T_spline_init = interp.Spline(t_init, 5, 5, self.PC, self.guess_subset_slice)
         # Do the angle search first
         t_init_fft = np.fft.fftshift(np.fft.fft2(t_init))
         t_init_FMT, _ = FMT(
@@ -300,7 +348,8 @@ class ICGNOptimizer:
         theta = (np.argmax(cc) - len(cc) / 2) * np.pi / len(cc)
         # Apply the rotation
         h = conversions.xyt2h_partial(np.array([[0, 0, -theta]]))[0]
-        t_init_rot = warp.deform_image(t_init, h, self.PC)
+        t_init_rot = T_spline_init.warp(h).reshape(t_init.shape)
+        # t_init_rot = warp.deform_image(t_init, h, self.PC)
         # Do the translation search
         cc = signal.fftconvolve(
             self.precomputed.r_init, t_init_rot[::-1, ::-1], mode="same"
@@ -321,9 +370,11 @@ class ICGNOptimizer:
         while num_iter < self.max_iter:
             # Warp the target subset
             num_iter += 1
-            t_deformed = warp.deform(self.precomputed.xi, T_spline, p)
+            # t_deformed = warp.deform(self.precomputed.xi, T_spline, p)
+            t_deformed = T_spline.warp(p)
             # Compute the residuals
-            e = self.precomputed.r - normalize(t_deformed)
+            # e = self.precomputed.r - normalize(t_deformed)
+            e = self.precomputed.r - t_deformed
             residuals.append(np.abs(e).mean())
             # Copmute the gradient of the correlation criterion
             dC_IC_ZNSSD = (
@@ -401,11 +452,21 @@ class ICGNOptimizer:
         with open(filename, "wb") as f:
             dill.dump(self.results, f)
 
+    def save(self, filename: str) -> None:
+        """Save the optimizer to a file."""
+        with open(filename, "wb") as f:
+            dill.dump(self, f)
+
     def load_results(self, filename: str) -> None:
         """Load the results from a file."""
         with open(filename, "rb") as f:
             self.results = dill.load(f)
 
+    def load(self, filename: str) -> None:
+        """Load the optimizer from a file."""
+        with open(filename, "rb") as f:
+            obj = dill.load(f)
+        self.__dict__.update(obj.__dict__)
 
 # Functions for the inverse composition gauss-newton algorithm
 

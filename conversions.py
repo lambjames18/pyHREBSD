@@ -118,7 +118,7 @@ def h2F(H, PC):
 
     # Negate the detector distance becase our coordinates have +z pointing from the sample towards the detector
     # The calculation is the opposite, so we need to negate the distance
-    DD = -DD
+    # DD = -DD
 
     # Calculate the deformation gradient
     beta0 = 1 - h31 * x01 - h32 * x02
@@ -140,6 +140,50 @@ def h2F(H, PC):
         Fe = np.squeeze(np.moveaxis(Fe, (0, 1, 2), (1, 2, 0)))
 
     return Fe
+
+
+def F2h(Fe: np.ndarray, PC: tuple | list | np.ndarray) -> np.ndarray:
+    """Calculate the homography from a deformation gradient using the projection geometry (pattern center).
+
+    Args:
+        Fe (np.ndarray): The deformation gradient.
+        PC (tuple | list | np.ndarray): The pattern center.
+
+    Returns:
+        np.ndarray: The homography matrix."""
+    # Reshape the deformation gradient if necessary
+    if Fe.ndim == 3:
+        Fe = Fe[None, ...]
+    elif Fe.ndim == 2:
+        Fe = Fe[None, None, ...]
+
+    # Extract the data from the inputs
+    x01, x02, DD = PC
+    F11, F12, F13, F21, F22, F23, F31, F32 = Fe[..., 0, 0], Fe[..., 0, 1], Fe[..., 0, 2], Fe[..., 1, 0], Fe[..., 1, 1], Fe[..., 1, 2], Fe[..., 2, 0], Fe[..., 2, 1]
+
+    # Calculate the homography
+    g0 = DD + F31 * x01 + F32 * x02
+    g11 = DD * F11 - F31 * x01 - g0
+    g22 = DD * F22 - F32 * x02 - g0
+    g13 = DD * ((F11 - 1) * x01 + F12 * x02 + F13 * DD) + x01 * (DD - g0)
+    g23 = DD * (F21 * x01 + (F22 - 1) * x02 + F23 * DD) + x02 * (DD - g0)
+    h11 = g11 / g0
+    h12 = (DD * F12 - F32 * x01) / g0
+    h13 = g13 / g0
+    h21 = (DD * F21 - F31 * x02) / g0
+    h22 = g22 / g0
+    h23 = g23 / g0
+    h31 = F31 / g0
+    h32 = F32 / g0
+    H = np.array([h11, h12, h13, h21, h22, h23, h31, h32])
+
+    # Reshape the output if necessary
+    if H.ndim == 3:
+        H = np.squeeze(np.moveaxis(H, (0, 1, 2), (1, 2, 0)))
+    if H.ndim == 2:
+        H = np.squeeze(H.T)
+
+    return H
 
 
 def F2strain(Fe: np.ndarray, C: np.ndarray = None, small_strain: bool = False) -> tuple:

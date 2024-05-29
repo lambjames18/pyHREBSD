@@ -7,8 +7,8 @@ import get_homography
 if __name__ == "__main__":
     ############################
     # Load the pattern object
-    # up2 = "E:/cells/CoNi90-ParallelCells_2048x2048.up2"
-    up2 = "G:20240320_27064_2048x2048.up2"
+    up2 = "E:/cells/CoNi90-ParallelCells_2048x2048.up2"  # File doesnt exist at the moment
+    up2 = "F:/CoNi90-ParallelCells_2048x2048.up2"
     ang = "E:/cells/CoNi90-ParallelCells.ang"
     name = "CoNi90-OrthoCells"
     # Set the geometry parameters
@@ -40,6 +40,16 @@ if __name__ == "__main__":
     
     # Load the pattern object
     pat_obj, ang_data = utilities.get_scan_data(up2, ang)
+    pats = utilities.get_patterns(pat_obj, [0, 10000, 39999])
+    print(pats.min(axis=(1, 2)), pats.max(axis=(1, 2)))
+    fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+    ax[0].imshow(pats[0], cmap="gray")
+    ax[0].set_title("Pattern 0")
+    ax[1].imshow(pats[1], cmap="gray")
+    ax[1].set_title("Pattern 10000")
+    ax[2].imshow(pats[2], cmap="gray")
+    ax[2].set_title("Pattern 39999")
+    plt.show()
 
     # Create the optimizer
     optimizer = get_homography.ICGNOptimizer(
