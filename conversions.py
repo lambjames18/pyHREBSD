@@ -62,8 +62,7 @@ def xyt2h(shifts: np.ndarray, PC: tuple | list | np.ndarray, tilt: float | int) 
                    [s1*s3 - c1*c3*s2, c3*s1 + c1*s2*s3, c1*c2]])
     Rs = Rs.transpose(2, 0, 1)
     # Get the global rotation matrix in the detector frame
-    ### TODO: Make sure the tilt is correct. Is it just the sample tilt or is it the sample tilt - the detector tilt? Other?
-    Psr = rotations.eu2om(np.array([0.0, - tilt * np.pi / 180, 0.0], dtype=float))
+    Psr = rotations.eu2om(np.array([0.0, tilt * np.pi / 180, 0.0], dtype=float))
     # Rr = np.matmul(Psr.T, np.matmul(Rs, Psr))
     Rr = np.matmul(Psr, np.matmul(Rs, Psr.T))
     # Rr = Rs
@@ -112,8 +111,12 @@ def h2F(H, PC):
     if H.ndim == 1:
         H.reshape(1, 8)
 
-    # Extract the data from the inputs 
-    x01, x02, DD = PC
+    # Extract the data from the inputs
+    if np.asarray(PC).ndim == 1:
+        input_pc = np.array(PC)
+        PC = np.ones(H.shape[:-1] + (3,))
+        PC[..., :3] = input_pc[:3]
+    x01, x02, DD = PC[..., 0], PC[..., 1], PC[..., 2]
     h11, h12, h13, h21, h22, h23, h31, h32 = H[..., 0], H[..., 1], H[..., 2], H[..., 3], H[..., 4], H[..., 5], H[..., 6], H[..., 7]
 
     # Negate the detector distance becase our coordinates have +z pointing from the sample towards the detector

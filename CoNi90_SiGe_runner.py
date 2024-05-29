@@ -10,7 +10,7 @@ import conversions
 if __name__ == "__main__":
     ############################
     # Load the pattern object
-    sample = "A"  # The sample to analyze, "A" or "B"
+    sample = "B"  # The sample to analyze, "A" or "B"
     name = dict(A="SiGeScanA", B="SiGeScanB")[sample]
     up2 = dict(A="E:/SiGe/ScanA.up2", B="E:/SiGe/ScanB.up2")[sample]
     ang = dict(A="E:/SiGe/ScanA.ang", B="E:/SiGe/ScanB.ang")[sample]
@@ -18,6 +18,7 @@ if __name__ == "__main__":
     pixel_size = 13.0  # The pixel size in um
     sample_tilt = 70.0  # The sample tilt in degrees
     detector_tilt = 10.1  # The detector tilt in degrees
+    step_size = 0.450  # The step size in um
     subset_size = 1600
     initial_guess_subset_size = 1024
     # Set the roi parameters
@@ -51,8 +52,11 @@ if __name__ == "__main__":
         ang_data.pc,
         sample_tilt,
         detector_tilt,
+        pixel_size,
+        step_size,
         ang_data.shape,
         small_strain,
+        C
     )
     # Set the image processing parameters
     optimizer.set_image_processing_kwargs(
@@ -78,18 +82,18 @@ if __name__ == "__main__":
     else:
         optimizer.load(f"results/{name}_optimizer.pkl")
         # optimizer.load_results("results/CoNi90_DED_ICGN.pkl")
-    # optimizer.PC = (optimizer.PC[0] - optimizer.pat_obj.patshape[0] / 2,
-    #                 optimizer.PC[1] - optimizer.pat_obj.patshape[1] / 2,
-    #                 optimizer.PC[2])
     h = optimizer.results.homographies
-    num_iter = optimizer.results.num_iter
-    residuals = optimizer.results.residuals
-    norms = optimizer.results.norms
-    F = conversions.h2F(h, optimizer.PC)
-    e, w, s = conversions.F2strain(F, C, small_strain=small_strain)
-    euler = np.array([0.0, 90 + sample_tilt - detector_tilt, 0.0], dtype=float)
-    Psr = rotations.eu2om(euler * np.pi / 180).T  # Rotation matrix from SEM to sample reference frame
-    e = np.matmul(Psr, np.matmul(e, Psr.T))  # Convert strain tensor to sample reference frame
+    optimizer.create_PC_correction()
+    h = optimizer.correct_homography(h)
+    optimizer.PC = (optimizer.PC[0] - optimizer.pat_obj.patshape[0] / 2,
+                    optimizer.PC[1] - optimizer.pat_obj.patshape[1] / 2,
+                    optimizer.PC[2])
+    optimizer.PC_corrected[..., 0] = optimizer.PC_corrected[..., 0] - optimizer.pat_obj.patshape[0] / 2
+    optimizer.PC_corrected[..., 1] = optimizer.PC_corrected[..., 1] - optimizer.pat_obj.patshape[1] / 2
+    F = conversions.h2F(h, optimizer.PC_corrected)
+    # F = conversions.h2F(h, optimizer.PC)
+    F = optimizer.rotate_F(F)
+    e, w = conversions.F2strain(F, None, small_strain=small_strain)
     # Save the results
     # e = optimizer.results.e
 
@@ -105,9 +109,7 @@ if __name__ == "__main__":
     norms = optimizer.results.norms[0]
     x = np.arange(len(e11))
 
-    max_diff = e13.max() - e13
-    min_diff = e13 - e13.min()
-    mask = max_diff > min_diff
+    mask = e_tetra < -0.002
 
     color = np.array([(254, 188, 17) for _ in range(len(x))])
     color[mask] = (0, 54, 96)
@@ -136,4 +138,4 @@ if __name__ == "__main__":
         utilities.make_legend(a)
 
     plt.subplots_adjust(wspace=0.3, hspace=0.15, left=0.07, right=0.99, top=0.99, bottom=0.05)
-    plt.savefig(f"E:/SiGe/{name}_Sample_PC.png", dpi=300)
+    plt.savefig(f"E:/SiGe/{name}_Sample_corrected.png", dpi=300)

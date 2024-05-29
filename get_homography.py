@@ -7,6 +7,7 @@ from tqdm.auto import tqdm
 import mpire
 import dill
 
+import rotations
 import utilities
 import warp
 import conversions
@@ -54,6 +55,8 @@ class ICGNOptimizer:
         PC: ARRAY,
         sample_tilt: NUMBER,
         detector_tilt: NUMBER,
+        pixel_size: NUMBER,
+        step_size: NUMBER,
         scan_shape: ARRAY,
         small_strain: bool = False,
         C: np.ndarray = None,
@@ -61,7 +64,13 @@ class ICGNOptimizer:
         # Get inputs
         self.pat_obj = pat_obj
         self.PC = PC
-        self.tilt = 90 - sample_tilt + detector_tilt
+        self.detector_tilt = detector_tilt
+        self.sample_tilt = sample_tilt
+        self.tilt = 90 + sample_tilt - detector_tilt
+        euler = np.array([0.0, 90 + sample_tilt - detector_tilt, 0.0], dtype=float)
+        self.Sem2SamR = rotations.eu2om(euler * np.pi / 180).T  # Rotation matrix from SEM to sample reference frame
+        self.pixel_size = pixel_size
+        self.step_size = step_size
         self.scan_shape = scan_shape
         self.conv_tol = 1e-3
         self.max_iter = 50
@@ -199,7 +208,78 @@ class ICGNOptimizer:
         """Convert an index to row, column coordinates."""
         row = idx // self.scan_shape[1]
         col = idx % self.scan_shape[1]
-        return row, col
+        return np.array([row, col])
+
+    def rotate_F(self, F: np.ndarray) -> np.ndarray:
+        return np.matmul(self.Sem2SamR, np.matmul(F, self.Sem2SamR.T))
+
+    def create_PC_correction(self) -> np.ndarray:
+        """Apply projection geometry correction to a homography.
+
+        Args:
+            H (np.ndarray): The homography matrix.
+            PC (np.ndarray): The pattern center.
+            delPC (np.ndarray): The change in the pattern center.
+
+        Returns:
+            np.ndarray: The corrected homography."""
+        D_detector = self.pat_obj.patshape[1] * self.pixel_size
+        theta = np.radians(90 - self.sample_tilt)
+        phi = np.radians(self.detector_tilt)
+        x02, x01 = self.idx2rc(self.x0).astype(float)
+        y, x = np.indices(self.scan_shape).astype(float)
+        x = x01 - x
+        y = x02 - y
+        # Get the x_shift in % of the pattern size
+        x_shift = x * self.step_size / D_detector
+        # Get the pattern center x value in % of the pattern size
+        pc_x_rel = self.PC[0] / self.pat_obj.patshape[1] - x_shift
+        # Convert the pattern center x value to an index
+        pc_x = pc_x_rel * self.pat_obj.patshape[1]
+
+        # Get the y_shift in % of the pattern size
+        y_shift = y * self.step_size * np.cos(theta) / (D_detector * np.cos(phi))
+        # Get the pattern center y value in % of the pattern size
+        pc_y_rel = self.PC[1] / self.pat_obj.patshape[0] - y_shift
+        # Convert the pattern center y value to an index
+        pc_y = pc_y_rel * self.pat_obj.patshape[0]
+
+        # Get the z_shift in % of the pattern size
+        z_shift = y * self.step_size * np.sin(theta + phi) / D_detector
+        # Get the pattern center z value in % of the pattern size
+        pc_z_rel = self.PC[2] / self.pat_obj.patshape[0] - z_shift
+        # Convert the pattern center z value to an index
+        pc_z = pc_z_rel * self.pat_obj.patshape[0]
+
+        # Store the corrected pattern center
+        self.PC_corrected = np.array([pc_x, pc_y, pc_z]).transpose(1, 2, 0)
+
+        # Get the change in the pattern center
+        delx = self.PC[0] - pc_x 
+        dely = self.PC[1] - pc_y 
+        delz = self.PC[2] - pc_z 
+        self.delPC = np.dstack((delx, dely, delz))
+
+    def correct_homography(self, H: np.ndarray) -> np.ndarray:
+        x01, x02, DD = self.PC
+        dx01, dx02, dDD = self.delPC[..., 0][self.roi], self.delPC[..., 1][self.roi], self.delPC[..., 2][self.roi]
+        alpha = (DD - dDD) / DD
+        # alpha = DD / (DD + dDD)
+        g1 = dx01 + x01 * (alpha - 1)
+        g2 = dx02 + x02 * (alpha - 1)
+        H11, H12, H13, H21, H22, H23, H31, H32 = H[..., 0], H[..., 1], H[..., 2], H[..., 3], H[..., 4], H[..., 5], H[..., 6], H[..., 7]
+        h = np.array([(H11 + 1 - g1 * H31) / alpha - 1,
+                      (H12 - g1 * H32) / alpha,
+                      (H13 - g1) / alpha,
+                      (H21 - g2 * H31) / alpha,
+                      (H22 + 1 - g2 * H32) / alpha - 1,
+                      (H23 - g2) / alpha,
+                      H31, H32])
+        if h.ndim == 2:
+            h = h.T
+        elif h.ndim == 3:
+            h = h.transpose(1, 2, 0)
+        return h
 
     def reference_precompute(self) -> None:
         """Precompute arrays/values for the reference subset for the IC-GN algorithm."""
@@ -292,32 +372,6 @@ class ICGNOptimizer:
             out = [self.run_single(idx) for idx in tqdm(indices)]
         # Store the results
         self.process_results(out)
-
-    def process_results(self, out) -> None:
-        p = np.zeros(self.scan_shape + (8,), dtype=float)
-        num_iter = np.zeros(self.scan_shape, dtype=int)
-        residuals = np.zeros(self.scan_shape, dtype=float)
-        norms = np.zeros(self.scan_shape, dtype=float)
-        p[self.roi] = np.array([o[0] for o in out])
-        num_iter[self.roi] = np.array([o[1] for o in out])
-        residuals[self.roi] = np.array([o[2] for o in out])
-        norms[self.roi] = np.array([o[3] for o in out])
-        # Get the deformation gradient and the strain
-        PC_temp = (self.PC[0] - self.pat_obj.patshape[0] / 2, self.PC[1] - self.pat_obj.patshape[1] / 2, self.PC[2])
-        F = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
-        F[self.roi] = conversions.h2F(p[self.roi], PC_temp)
-        e = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
-        w = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
-        if self.C is not None:
-            E, R, S = conversions.F2strain(F[self.roi], self.C, self.small_strain)
-            s = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
-            s[self.roi] = S
-        else:
-            E, R = conversions.F2strain(F[self.roi], None, self.small_strain)
-            s = None
-        e[self.roi] = E
-        w[self.roi] = R
-        self.results = ICGNResults(num_iter, residuals, norms, p, F, e, w, s)      
 
     def run_single(self, idx: int) -> np.ndarray:
         """Run the homography optimization for a single point."""
@@ -446,6 +500,32 @@ class ICGNOptimizer:
 
         return p, int(num_iter), float(residuals[-1]), float(norms[-1])
 
+    def process_results(self, out) -> None:
+        p = np.zeros(self.scan_shape + (8,), dtype=float)
+        num_iter = np.zeros(self.scan_shape, dtype=int)
+        residuals = np.zeros(self.scan_shape, dtype=float)
+        norms = np.zeros(self.scan_shape, dtype=float)
+        p[self.roi] = np.array([o[0] for o in out])
+        num_iter[self.roi] = np.array([o[1] for o in out])
+        residuals[self.roi] = np.array([o[2] for o in out])
+        norms[self.roi] = np.array([o[3] for o in out])
+        # Get the deformation gradient and the strain
+        PC_temp = (self.PC[0] - self.pat_obj.patshape[0] / 2, self.PC[1] - self.pat_obj.patshape[1] / 2, self.PC[2])
+        F = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
+        F[self.roi] = self.rotate_F(conversions.h2F(p[self.roi], PC_temp))
+        e = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
+        w = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
+        if self.C is not None:
+            E, R, S = conversions.F2strain(F[self.roi], self.C, self.small_strain)
+            s = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
+            s[self.roi] = S
+        else:
+            E, R = conversions.F2strain(F[self.roi], None, self.small_strain)
+            s = None
+        e[self.roi] = E
+        w[self.roi] = R
+        self.results = ICGNResults(num_iter, residuals, norms, p, F, e, w, s)      
+
     def save_results(self, filename: str) -> None:
         """Save the results to a file."""
         with open(filename, "wb") as f:
@@ -470,7 +550,7 @@ class ICGNOptimizer:
 # Functions for the inverse composition gauss-newton algorithm
 
 
-def normalize(img):
+def normalize(img):#
     """Zero-mean normalize an image with unit standard deviation.
     Note that the standard deviation is multiplied by the number of pixels minus one.
     Args:
