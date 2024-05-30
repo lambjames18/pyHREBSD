@@ -120,9 +120,9 @@ def W(p) -> np.ndarray:
         in_shape = p.shape[:-1]
         _0 = np.zeros(in_shape + (1,))
         if p.ndim == 2:
-            return np.concatenate((p, _0), axis=-1).reshape(in_shape + (3, 3,)) + np.eye(3)[None, ...]
+            return np.squeeze(np.concatenate((p, _0), axis=-1).reshape(in_shape + (3, 3,)) + np.eye(3)[None, ...])
         elif p.ndim == 3:
-            return np.concatenate((p, _0), axis=-1).reshape(in_shape + (3, 3,)) + np.eye(3)[None, None, ...]
+            return np.squeeze(np.concatenate((p, _0), axis=-1).reshape(in_shape + (3, 3,)) + np.eye(3)[None, None, ...])
         else:
             raise ValueError("p must be 1, 2, or 3 dimensions.")
         

@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -7,48 +8,51 @@ import get_homography
 if __name__ == "__main__":
     ############################
     # Load the pattern object
-    up2 = "E:/cells/CoNi90-OrthoCells_2048x2048.up2"
+    up2 = "E:/cells/CoNi90-OrthoCells.up2"
     ang = "E:/cells/CoNi90-OrthoCells.ang"
     name = "CoNi90-OrthoCells"
     # Set the geometry parameters
     pixel_size = 13.0
     sample_tilt = 70.0  # The sample tilt in degrees
     detector_tilt = 9.8  # The detector tilt in degrees
-    subset_size = 1600
-    initial_guess_subset_size = 1024
+    step_size = 0.025  # The step size in um
+    subset_size = 200
+    initial_guess_subset_size = 256
     # Set the roi parameters
     start = (0, 0)  # The pixel location to start the ROI
-    span = (
-        200,
-        200,
-    )  # The (row, column) span of the ROI from the start location (down, right)
-    x0 = (112, 96)  # The location of the reference within the ROI
+    span = (200, 200)  # None is the full scan
+    x0 = (110, 95)  # The location of the reference within the ROI
     # Set the image processing parameters
-    sigma = 20
+    sigma = 1.0  # The sigma value for the Gaussian filter, should be roughly 1% of the image size
     equalize = True
     truncate = True
     # Set the small strain flag
     small_strain = False
+    # Set the stiffness tensor
+    C = utilities.get_stiffness_tensor(256.0, 157.0, 142.0, structure="cubic")
     # Calculate or read
-    calc = True
+    calc = False
     # Number of cores, max iterations, and convergence tolerance if calculating
-    n_cores = 20
-    max_iter = 100
+    n_cores = 15
+    max_iter = 200
     conv_tol = 1e-3
     ############################
-    
+
     # Load the pattern object
     pat_obj, ang_data = utilities.get_scan_data(up2, ang)
 
     # Create the optimizer
     optimizer = get_homography.ICGNOptimizer(
-        pat_obj,
-        x0,
-        ang_data.pc,
-        sample_tilt,
-        detector_tilt,
-        ang_data.shape,
-        small_strain,
+        pat_obj=pat_obj,
+        x0=x0,
+        PC=ang_data.pc,
+        sample_tilt=sample_tilt,
+        detector_tilt=detector_tilt,
+        pixel_size=pixel_size,
+        step_size=step_size,
+        scan_shape=ang_data.shape,
+        small_strain=small_strain,
+        C=C
     )
     # Set the image processing parameters
     optimizer.set_image_processing_kwargs(
@@ -60,23 +64,29 @@ if __name__ == "__main__":
     optimizer.set_homography_subset(subset_size, "image")
     # Set the initial guess parameters
     optimizer.set_initial_guess_params(
-        subset_size=initial_guess_subset_size, init_type="full"
+        subset_size=initial_guess_subset_size, init_type="partial"
     )
+    optimizer.print_setup()
+    time.sleep(1)
     if calc:
         # Run the optimizer
-        optimizer.run(n_cores=n_cores, max_iter=max_iter, conv_tol=conv_tol, verbose=False)
-        optimizer.save_results(f"results/{name}.pkl")
+        optimizer.run(
+            n_cores=n_cores, max_iter=max_iter, conv_tol=conv_tol, verbose=True
+        )
+        optimizer.save(f"results/{name}_optimizer.pkl")
+        # optimizer.save_results(f"results/{name}.pkl")
     else:
-        optimizer.load_results("results/CoNi90_DED_ICGN.pkl")
+        optimizer.load(f"results/{name}_optimizer.pkl")
+        # optimizer.load_results("results/CoNi90_DED_ICGN.pkl")
     # Save the results
     r = optimizer.results
     m = optimizer.roi
 
     # Generate maps
-    utilities.view_tensor_images(r.F[m].reshape(span + (3, 3)), "jet", "deformation", (x0[0] - start[0], x0[1] - start[1]), "results", name)
-    utilities.view_tensor_images(r.e[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
-    utilities.view_tensor_images(r.w[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
-    utilities.view_tensor_images(r.homographies[m].reshape(span + (8,)), "jet", "homography", (x0[0] - start[0], x0[1] - start[1]), "results", name)
+    utilities.view_tensor_images(r.F[m].reshape(span + (3, 3)), "jet", "deformation", (x0[0] - start[0], x0[1] - start[1]), "results", name, clip="local")
+    utilities.view_tensor_images(r.e[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper", clip="local")
+    utilities.view_tensor_images(r.w[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper", clip="local")
+    utilities.view_tensor_images(r.homographies[m].reshape(span + (8,)), "jet", "homography", (x0[0] - start[0], x0[1] - start[1]), "results", name, clip="local")
     plt.close("all")
 
     # Save the ICGN optimization results (for logging/debugging purposes)
@@ -87,7 +97,7 @@ if __name__ == "__main__":
     ax[1].set_title("Residuals")
     im2 = ax[2].imshow(r.norms[m].reshape(span), cmap="viridis")
     ax[2].set_title("Norms")
-    plt.subplots_adjust(wspace=0.5, left=0.1, right=0.9, top=0.99, bottom=0.01)
+    plt.subplots_adjust(wspace=0.7, left=0.1, right=0.9, top=0.99, bottom=0.01)
     l = ax[0].get_position()
     cax = fig.add_axes([l.x1 + 0.01, l.y0, 0.02, l.height])
     plt.colorbar(im0, cax=cax)
@@ -113,7 +123,7 @@ if __name__ == "__main__":
     theta[mask] *= -1
     fig, ax = plt.subplots(1, 1, figsize=(4, 4))
     im = ax.imshow(theta[m].reshape(span), cmap="viridis")
-    plt.subplots_adjust(left=0.1, right=0.9, top=0.99, bottom=0.01)
+    plt.subplots_adjust(left=0.1, right=0.88, top=0.99, bottom=0.01)
     l = ax.get_position()
     cax = fig.add_axes([l.x1 + 0.01, l.y0, 0.02, l.height])
     plt.colorbar(im, cax=cax)
