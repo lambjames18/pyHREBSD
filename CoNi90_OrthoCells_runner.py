@@ -85,7 +85,7 @@ if __name__ == "__main__":
     # Generate maps
     utilities.view_tensor_images(r.F[m].reshape(span + (3, 3)), "jet", "deformation", (x0[0] - start[0], x0[1] - start[1]), "results", name, clip="local")
     utilities.view_tensor_images(r.e[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper", clip="local")
-    utilities.view_tensor_images(r.w[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper", clip="local")
+    utilities.view_tensor_images(r.w[m].reshape(span + (3, 3)), "jet", "rotation", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper", clip="local")
     utilities.view_tensor_images(r.homographies[m].reshape(span + (8,)), "jet", "homography", (x0[0] - start[0], x0[1] - start[1]), "results", name, clip="local")
     plt.close("all")
 
@@ -121,11 +121,12 @@ if __name__ == "__main__":
     mask = u[2] < 0
     theta = np.arcsin(np.linalg.norm(u, axis=0) / 2) * 180 / np.pi
     theta[mask] *= -1
+    mx = np.max(np.abs(theta))
     fig, ax = plt.subplots(1, 1, figsize=(4, 4))
-    im = ax.imshow(theta[m].reshape(span), cmap="viridis")
+    im = ax.imshow(theta[m].reshape(span), cmap="coolwarm", vmin=-mx, vmax=mx)
     plt.subplots_adjust(left=0.1, right=0.88, top=0.99, bottom=0.01)
     l = ax.get_position()
     cax = fig.add_axes([l.x1 + 0.01, l.y0, 0.02, l.height])
-    plt.colorbar(im, cax=cax)
-    plt.savefig(f"results/{name}_rotation.png")
+    plt.colorbar(im, cax=cax, label="Misorientation (°)")
+    plt.savefig(f"results/{name}_misorientation.png")
     plt.close(fig)
