@@ -2,22 +2,16 @@
 import struct
 import os
 import numpy as np
-import ebsd_pattern
-from skimage import io
-from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
+from tqdm.auto import tqdm
 
-### USER INPUTS ###
-path = "E:/DED_CoNi90.ang"
-save_path = "E:/DED_CoNi90_0.ang"
-sharpness_path = "E:/sharpness.npy"
-
+import utilities
 
 class ang_file:
     def __init__(self, ang_path: str) -> None:
         self.path = ang_path
         self.read()
-        self.format_lut = dict(phi1="{:.5f}", phi="{:.5f}", phi2="{:.5f}", x="{:.5f}", y="{:.5f}", iq="{:.1f}", ci="{:.3f}", phase="{:.0f}", sem="{:.0f}", fit="{:.3f}")
+        self.format_lut = dict(phi1="{:.5f}", phi="{:.5f}", phi2="{:.5f}", x="{:.5f}", y="{:.5f}", iq="{:.5f}", ci="{:.3f}", phase="{:.0f}", sem="{:.0f}", fit="{:.3f}")
 
     def read(self) -> None:
         with open(self.path, 'r') as f:
@@ -39,7 +33,8 @@ class ang_file:
         self.header = open(self.path).readlines()[:self.header_line_count]
         self.data = np.genfromtxt(self.path, skip_header=self.header_line_count)
         self.data = self.data.reshape(self.n_rows, self.n_cols, self.data.shape[1])
-        print("line 24:", self.header[24])
+        self.shape = (self.n_rows, self.n_cols)
+        # print("line 24:", self.header[24])
 
     def crop(self, x0, x1, y0, y1) -> None:
         """Crops the data to the specified bounds.
@@ -95,10 +90,53 @@ class up2_file:
             sizeBytes = os.path.getsize(self.path) - 16
             self.sizeString = str(round(sizeBytes / 1e6, 1)) + " MB"
             bytesPerPixel = 2
-            print("Header:", self.FirstEntry, sz1, sz2, self.bitsPerPixel)
+            # print("Header:", self.FirstEntry, sz1, sz2, self.bitsPerPixel)
             self.nPatterns = int((sizeBytes/bytesPerPixel) / (sz1 * sz2))
             self.patshape = (sz1, sz2)
         self.pidx = np.arange(self.nPatterns)
+
+
+    def get_patterns(self, idx: None) -> tuple:
+        """Read in patterns from a pattern file object.
+
+        Args:
+            idx (np.ndarray | list | tuple): Indices of patterns to read in. If None, reads in all patterns.
+
+        Returns:
+            np.ndarray: Patterns."""
+        # Handle inputs
+        if idx is None:
+            idx = range(self.nPatterns)
+            reshape = False
+        else:
+            idx = np.asarray(idx)
+            reshape = False
+            if idx.ndim >= 2:
+                reshape = True
+                out_shape = idx.shape + self.patshape
+                idx = idx.flatten()
+
+        # Read in the patterns
+        start_byte = np.int64(16)
+        pattern_bytes = np.int64(self.patshape[0] * self.patshape[1] * 2)
+        pats = np.zeros((len(idx), *self.patshape), dtype=np.uint16)
+        with open(self.path, "rb") as datafile:
+            for i in tqdm(range(len(idx)), desc="Reading patterns", unit="pats"):
+            # for i in range(len(idx)):
+                pat = np.int64(idx[i])
+                seek_pos = np.int64(start_byte + pat * pattern_bytes)
+                datafile.seek(seek_pos)
+                pats[i] = np.frombuffer(
+                    datafile.read(self.patshape[0] * self.patshape[1] * 2),
+                    dtype=np.uint16,
+                ).reshape(self.patshape)
+
+        # Reshape the patterns
+        pats = np.squeeze(pats)
+        if reshape:
+            return pats.reshape(out_shape)
+        else:
+            return pats
 
     def set_scan_shape(self, shape: tuple) -> None:
         if shape[0] * shape[1] != self.nPatterns:
@@ -144,57 +182,48 @@ class up2_file:
                     writeFile.write(readFile.read(pattern_bytes))
 
 
-ang = "E:/GaN/GaN.ang"
-up2 = "E:/GaN/GaN_2048x2048.up2"
+### USER INPUTS ###
+up2 = "E:/cells/CoNi90-ParallelCells_20240320_27064_scan6_1024x1024.up2"
+ang = "E:/cells/CoNi90-ParallelCells_20240320_27064_scan6.ang"
 
 ang_obj = ang_file(ang)
-ang_obj.crop(0, 50, 150, 200)
-ang_obj.write("E:/GaN/GaN_0.ang")
+iq_index = ang_obj.column_headers_lower.index("iq")
+ci_index = ang_obj.column_headers_lower.index("ci")
+print(ang_obj.data[:, :, iq_index].min(), ang_obj.data[:, :, iq_index].max())
 
 up2_obj = up2_file(up2)
-up2_obj.set_scan_shape((200, 200))
-up2_obj.crop(0, 50, 150, 200)
-up2_obj.write("E:/GaN/GaN_0.up2")
+pidxes = np.array_split(np.arange(up2_obj.nPatterns), 10)
+sharpness = np.zeros(up2_obj.nPatterns)
+for pidx in pidxes:
+    pats = up2_obj.get_patterns(pidx)
+    s = utilities.get_sharpness(pats)
+    sharpness[pidx] = s
 
-exit()
+sharpness = sharpness.reshape(ang_obj.shape)
+
+np.save("E:/cells/CoNi90-ParallelCells_20240320_27064_scan6_sharpness.npy", sharpness)
+# sharpness = np.load("E:/cells/CoNi90-ParallelCells_20240320_27064_scan6_sharpness.npy")
+
+ang_obj.data[:, :, iq_index] = sharpness
+
+fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+ax[0].imshow(ang_obj.data[:, :, iq_index])
+ax[0].set_title("IQ (Sharpness)")
+ax[1].imshow(ang_obj.data[:, :, ci_index])
+ax[1].set_title("CI")
+plt.show()
+
+print(ang_obj.data[:, :, iq_index].min(), ang_obj.data[:, :, iq_index].max())
+
+ang_obj.write("E:/cells/CoNi90-ParallelCells_20240320_27064_scan6_sharpness.ang")
+
+# ang_obj = ang_file(ang)
+# ang_obj.crop(0, 50, 150, 200)
+# ang_obj.write("E:/GaN/GaN_0.ang")
+
+# up2_obj = up2_file(up2)
+# up2_obj.set_scan_shape((200, 200))
+# up2_obj.crop(0, 50, 150, 200)
+# up2_obj.write("E:/GaN/GaN_0.up2")
 
 
-
-# Need to grab the header from the ang file and grab the scan dimensions/resolution
-print("Parsing ANG file...")
-with open(path, 'r') as f:
-    for i, l in enumerate(f.readlines()):
-        if l[0] != "#":
-            header_end = i
-            break
-        elif l[:13] == "# NCOLS_EVEN:":
-            n_cols = int(float(l.split(":")[1].replace("\n", "")))
-        elif l[:8] == "# NROWS:":
-            n_rows = int(float(l.split(":")[1].replace("\n", "")))
-        elif l[:8] == "# XSTEP:":
-            x_step = float(l.split(":")[1].replace("\n", ""))
-        elif l[:8] == "# YSTEP:":
-            y_step = float(l.split(":")[1].replace("\n", ""))
-
-header = open(path).readlines()[:header_end]
-data = np.genfromtxt(path, skip_header=header_end)
-data = data.reshape(n_rows, n_cols, data.shape[1])
-s = np.load(sharpness_path)
-s = np.around(2**16 * (s - s.min()) / (s.max() - s.min()))
-data[:, :, 5] = s
-
-
-print("  Writing new ANG file...")
-data = data.reshape(-1, data.shape[2])
-fmts = ["%.5f", "%.5f", "%.5f", "%.5f", "%.5f", "%.1f", "%.3f", "%.0f", "%.0f", "%.3f", "%.6f", "%.6f", "%.6f"]
-space = [3, 5, 5, 7, 7, 7, 3, 3, 7, 4, 7, 7, 7]
-with open(save_path, 'w') as f:
-    for l in header:
-        f.write(l)
-    for d in data:
-        spaces = [" "*(space[i] - len(str(int(d[i])))) for i in range(len(d))]
-        values = [fmts[i] % (d[i]+0.0) for i in range(len(d))]
-        line = "".join([spaces[i] + values[i] for i in range(len(d))])
-        line = line + "\n"
-        # line = "  {:.5f}   {:.5f}   {:.5f}      {:.5f}      {:.5f}    {:.1f}  {:.3f}  {:.0f}      {:.0f} {:.3f}\n".format(*l)
-        f.write(line)

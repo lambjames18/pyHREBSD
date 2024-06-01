@@ -15,6 +15,7 @@ from skimage import exposure, filters
 import torch
 import kornia
 
+import segment
 import rotations
 
 NUMERIC = r"[-+]?\d*\.\d+|\d+"
@@ -76,7 +77,7 @@ def read_up2(up2: str) -> namedtuple:
     return out
 
 
-def read_ang(path: str, patshape: tuple | list | np.ndarray) -> namedtuple:
+def read_ang(path: str, patshape: tuple | list | np.ndarray = None, segment_grain_threshold: float = None) -> namedtuple:
     """Reads in the pattern center from an ang file.
     Only supports EDAX/TSL.
 
@@ -86,7 +87,10 @@ def read_ang(path: str, patshape: tuple | list | np.ndarray) -> namedtuple:
 
     Args:
         ang (str): Path to the ang file.
-        patshape (tuple): The shape of the patterns.
+        patshape (tuple): The shape of the patterns. If None, the pattern center will be
+                          (xstar, ystar, zstar) and not (xpc, ypc, L).
+        segment_grain_threshold (bool): Grain boundary threshold for segmenting grains.
+                                        If None (default), grains will not be segmented.
 
     Returns:
         namedtuple: The data read in from the ang file with the following fields:
@@ -95,7 +99,9 @@ def read_ang(path: str, patshape: tuple | list | np.ndarray) -> namedtuple:
                     - shape: The shape of the data.
                     - pc: The pattern center.
                     - pidx: The index of the pattern in the pattern file.
-                    - all data columns in the ang file (i.e. x, y, iq, ci, sem, phase_index, etc.)
+                    - ids: The grain IDs. Will be all ones if segment_grains is False.
+                    - all data columns in the ang file
+                      (i.e. x, y, iq, ci, sem, phase_index, etc.)
     """
     header_lines = 0
     with open(path, "r") as ang:
@@ -110,6 +116,8 @@ def read_ang(path: str, patshape: tuple | list | np.ndarray) -> namedtuple:
                 rows = int(re.findall(NUMERIC, line)[0])
             elif "NCOLS_ODD" in line:
                 cols = int(re.findall(NUMERIC, line)[0])
+            elif "XSTEP" in line:
+                step_size = float(re.findall(NUMERIC, line)[0])
             elif "COLUMN_HEADERS" in line:
                 names = line.replace("\n", "").split(":")[1].strip().split(", ")
             elif "HEADER: End" in line:
@@ -117,9 +125,14 @@ def read_ang(path: str, patshape: tuple | list | np.ndarray) -> namedtuple:
             header_lines += 1
 
     # Package the header data
-    PC = convert_pc((xstar, ystar, zstar), patshape)
+    if patshape is not None:
+        PC = convert_pc((xstar, ystar, zstar), patshape)
+    else:
+        PC = (xstar, ystar, zstar)
     shape = (rows, cols)
-    names.extend(["eulers", "quats", "shape", "pc", "pidx"])
+    names.extend(["eulers", "quats", "shape", "pc", "step_size", "pidx"])
+    if segment_grain_threshold is not None:
+        names.extend(["ids", "kam"])
     names = [
         name.replace(" ", "_").lower()
         for name in names
@@ -133,12 +146,15 @@ def read_ang(path: str, patshape: tuple | list | np.ndarray) -> namedtuple:
     ang_data = ang_data[..., 3:]
     qu = rotations.eu2qu(euler)
     pidx = np.arange(np.prod(shape)).reshape(shape)
+    if segment_grain_threshold is not None:
+        ids, kam = segment.segment_grains(qu, segment_grain_threshold)
+        args = (euler, qu, shape, PC, step_size, pidx, ids, kam)
+    else:
+        args = (euler, qu, shape, PC, step_size, pidx)
     ang_data = np.moveaxis(ang_data, 2, 0)
 
     # Package everything into a namedtuple
-    out = namedtuple("ang_file", names)(
-        *ang_data, eulers=euler, quats=qu, shape=shape, pc=PC, pidx=pidx
-    )
+    out = namedtuple("ang_file", names)(*ang_data, *args)
     return out
 
 

@@ -8,22 +8,22 @@ import get_homography
 if __name__ == "__main__":
     ############################
     # Load the pattern object
-    up2 = "E:/cells/CoNi90-OrthoCells.up2"
-    ang = "E:/cells/CoNi90-OrthoCells.ang"
+    up2 = "E:/cells/CoNi90-OrthoCells_20240320_27061_scan3_1024x1024.up2"
+    ang = "E:/cells/CoNi90-OrthoCells_20240320_27061_scan3.ang"
     name = "CoNi90-OrthoCells"
     # Set the geometry parameters
-    pixel_size = 13.0
+    pixel_size = 26.0
     sample_tilt = 70.0  # The sample tilt in degrees
-    detector_tilt = 9.8  # The detector tilt in degrees
-    step_size = 0.025  # The step size in um
-    subset_size = 200
-    initial_guess_subset_size = 256
+    detector_tilt = 10.1  # The detector tilt in degrees
+    step_size = 0.02  # The step size in um
+    subset_size = 900
+    initial_guess_subset_size = 1024
     # Set the roi parameters
     start = (0, 0)  # The pixel location to start the ROI
-    span = (200, 200)  # None is the full scan
-    x0 = (110, 95)  # The location of the reference within the ROI
+    span = (250, 250)  # None is the full scan
+    x0 = (121, 149)  # The location of the reference within the ROI
     # Set the image processing parameters
-    sigma = 1.0  # The sigma value for the Gaussian filter, should be roughly 1% of the image size
+    sigma = 7.0  # The sigma value for the Gaussian filter, should be roughly 1% of the image size
     equalize = True
     truncate = True
     # Set the small strain flag
@@ -31,9 +31,11 @@ if __name__ == "__main__":
     # Set the stiffness tensor
     C = utilities.get_stiffness_tensor(256.0, 157.0, 142.0, structure="cubic")
     # Calculate or read
-    calc = False
+    calc = True
+    # Whether to view the reference image
+    view_reference = True
     # Number of cores, max iterations, and convergence tolerance if calculating
-    n_cores = 15
+    n_cores = 20
     max_iter = 200
     conv_tol = 1e-3
     ############################
@@ -67,6 +69,8 @@ if __name__ == "__main__":
         subset_size=initial_guess_subset_size, init_type="partial"
     )
     optimizer.print_setup()
+    if view_reference:
+        optimizer.view_reference()
     time.sleep(1)
     if calc:
         # Run the optimizer

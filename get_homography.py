@@ -203,6 +203,14 @@ class ICGNOptimizer:
         print(f"\tSmall strain: {self.small_strain}")
         print("***********************************")
 
+    def view_reference(self) -> None:
+        R = utilities.get_pattern(self.pat_obj, self.x0)
+        R = utilities.process_pattern(R, **self.image_processing_kwargs)
+        fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+        ax.imshow(R, cmap="gray")
+        ax.axis("off")
+        plt.show()
+
     def rc2idx(self, row: NUMBER, col: NUMBER) -> NUMBER:
         """Convert x, y coordinates to an index."""
         return row * self.scan_shape[1] + col
