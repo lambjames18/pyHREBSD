@@ -420,7 +420,7 @@ class ICGNOptimizer:
         ).real
         shift = np.unravel_index(np.argmax(cc), cc.shape) - np.array(cc.shape) / 2
         # Store the homography
-        measurement = np.array([[-shift[1], -shift[0], -theta]])
+        measurement = np.array([[-shift[0], -shift[1], -theta]])
         # Convert the measurements to homographies
         if self.init_type == "full":
             p = conversions.xyt2h(measurement, self.PC, self.tilt)
@@ -537,7 +537,7 @@ class ICGNOptimizer:
         PC_array_temp[..., 1] = PC_array_temp[..., 1] - self.pat_obj.patshape[1] / 2
         F = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
         F_roi = self.rotate_F(conversions.h2F(p[self.roi], PC_array_temp[self.roi]))
-        F_roi = F_roi / F_roi[..., 2, 2][:, :, None, None]
+        F_roi = F_roi / F_roi[..., 2, 2][..., None, None]
         F[self.roi] = F_roi
         e = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)
         w = np.zeros((self.scan_shape[0], self.scan_shape[1], 3, 3), dtype=float)

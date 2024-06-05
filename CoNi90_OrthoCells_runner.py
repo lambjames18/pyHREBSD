@@ -16,14 +16,14 @@ if __name__ == "__main__":
     sample_tilt = 70.0  # The sample tilt in degrees
     detector_tilt = 10.1  # The detector tilt in degrees
     step_size = 0.02  # The step size in um
-    subset_size = 900
+    subset_size = 850
     initial_guess_subset_size = 1024
     # Set the roi parameters
     start = (0, 0)  # The pixel location to start the ROI
     span = (250, 250)  # None is the full scan
     x0 = (121, 149)  # The location of the reference within the ROI
     # Set the image processing parameters
-    sigma = 7.0  # The sigma value for the Gaussian filter, should be roughly 1% of the image size
+    sigma = 6.0  # The sigma value for the Gaussian filter, should be roughly 1% of the image size
     equalize = True
     truncate = True
     # Set the small strain flag
@@ -33,10 +33,10 @@ if __name__ == "__main__":
     # Calculate or read
     calc = True
     # Whether to view the reference image
-    view_reference = True
+    view_reference = False
     # Number of cores, max iterations, and convergence tolerance if calculating
-    n_cores = 20
-    max_iter = 200
+    n_cores = 16
+    max_iter = 50
     conv_tol = 1e-3
     ############################
 
