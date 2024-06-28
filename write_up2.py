@@ -2,8 +2,32 @@ import numpy as np
 from collections import namedtuple
 import struct
 import os
-from tqdm.auto import tqdm
-import matplotlib.pyplot as plt
+# from tqdm.auto import tqdm
+# import matplotlib.pyplot as plt
+
+
+
+########## USER INPUTS ##########
+
+### List of all the up2 filepaths that need to be processed
+paths = ["E:/SiGe/a-C03-scan/ScanA_2048x2048.up2", "E:/SiGe/b-C04-scan/ScanB_2048x2048.up2"]
+
+### List of the save paths for the processed up2 files
+save_paths = ["E:/SiGe/a-C03-scan/ScanA_1024x1024.up2", "E:/SiGe/b-C04-scan/ScanB_1024x1024.up2"]
+
+### Processing parameters
+bin_pats = True        # Whether to bin the patterns
+binning = 2            # Binning factor
+binning_mode = "mean"  # Binning mode, "mean" or "sum"
+
+flip_pats = True       # Whether to flip the patterns
+flip = "lr"            # Flip mode, "lr", "ud", or "both"
+
+######### END USER INPUTS #########
+
+
+
+
 
 def read_up2(up2: str) -> namedtuple:
     """Read in patterns and a pattern center from an ang file and a pattern file.
@@ -29,7 +53,7 @@ def read_up2(up2: str) -> namedtuple:
     sz2 = struct.unpack('i', tmp)[0]
     tmp = upFile.read(chunk_size)
     bitsPerPixel = struct.unpack('i', tmp)[0]
-    print("Header:", FirstEntryUpFile, sz1, sz2, bitsPerPixel)
+    # print("Header:", FirstEntryUpFile, sz1, sz2, bitsPerPixel)
     sizeBytes = os.path.getsize(up2) - 16
     sizeString = str(round(sizeBytes / 1e6, 1)) + " MB"
     bytesPerPixel = 2
@@ -65,7 +89,8 @@ def get_patterns(pat_obj: namedtuple, idx: np.ndarray | list | tuple = None) -> 
     start_byte = np.int64(16)
     pattern_bytes = np.int64(pat_obj.patshape[0] * pat_obj.patshape[1] * 2)
     pats = np.zeros((len(idx), *pat_obj.patshape), dtype=np.uint16)
-    for i in tqdm(range(len(idx)), desc="Reading patterns"):
+    # for i in tqdm(range(len(idx)), desc="Reading patterns"):
+    for i in range(len(idx)):
         pat = np.int64(idx[i])
         seek_pos = start_byte + pat * pattern_bytes
         pat_obj.datafile.seek(seek_pos)
@@ -127,7 +152,8 @@ def write_up2(pats_array: np.ndarray, filename: str, bit_depth: int = 16):
     upFile.write(struct.pack('i', bit_depth))
 
     # Write the patterns
-    for i in tqdm(range(pats_array.shape[0]), desc="Writing patterns"):
+    # for i in tqdm(range(pats_array.shape[0]), desc="Writing patterns"):
+    for i in range(pats_array.shape[0]):
         upFile.write(pats_array[i].reshape(-1).tobytes())
 
     # Close the file
@@ -173,21 +199,36 @@ def bin_patterns(patterns: np.ndarray, binning: int, mode: str = "mean") -> np.n
     return pats_binned
 
 
-path = "F:/4D-EBSD/NIST SiGe/20240430_27179.up2"
-binning = 8
-binning_mode = "mean"
-pat_obj = read_up2(path)
-pats = get_patterns(pat_obj)
+def flip_patterns(patterns: np.ndarray, mode: str = None) -> np.ndarray:
+    """Flip patterns along the horizontal or vertical axis.
+
+    Args:
+        patterns (np.ndarray): 3D array of patterns.
+        mode (str): Mode to flip the patterns. Options are "lr", "ud", or "both". Default is None (no flipping).
+
+    Returns:
+        np.ndarray: Flipped patterns."""
+    if mode is None:
+        return patterns
+    elif mode == "lr":
+        return np.flip(patterns, axis=-1)
+    elif mode == "ud":
+        return np.flip(patterns, axis=-2)
+    elif mode == "both":
+        return np.flip(np.flip(patterns, axis=-1), axis=-2)
+    else:
+        raise ValueError("mode must be 'lr' or 'ud'.")
 
 
-#print("Input patterns array shape:", pats.shape)
-#pats_binned = bin_patterns(pats, binning, mode=binning_mode)
-#print("Binned patterns array shape:", pats_binned.shape)
-#save_path = "F:/4D-EBSD/NIST SiGe/20240430_27179_256x256.up2"
-#write_up2(pats_binned, save_path, bit_depth=16)
+# Actually do the work
+for i in range(len(paths)):
+    print("Processing", paths[i])
+    pat_obj = read_up2(paths[i])
+    pats = get_patterns(pat_obj)
 
-pats = np.vstack((pats, pats))
-print("Binned patterns array shape:", pats.shape)
-
-save_path = "F:/4D-EBSD/NIST SiGe/20240430_27179_double.up2"
-write_up2(pats, save_path, bit_depth=16)
+    if bin_pats:
+        pats_out = bin_patterns(pats, binning, mode=binning_mode)
+    if flip_pats:
+        pats_out = flip_patterns(pats_out, mode=flip)
+    write_up2(pats_out, save_paths[i], bit_depth=16)
+    print("\tSaved to", save_paths[i])

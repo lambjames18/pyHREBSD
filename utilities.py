@@ -372,7 +372,7 @@ def process_patterns_gpu(
 
 
 def process_pattern(
-    img: np.ndarray, sigma: float = 0.0, equalize: bool = True, truncate: bool = True
+    img: np.ndarray, low_pass_sigma: float = 2.5, high_pass_sigma: float = 101, truncate_std_scale: float = 3.0
 ) -> np.ndarray:
     """Cleans patterns by equalizing the histogram and normalizing.
 
@@ -387,23 +387,24 @@ def process_pattern(
     # Process inputs
     img = img.astype(np.float32)
     median = np.percentile(img, 50)
-    low_percentile = np.percentile(img, 1)
-    high_percentile = np.percentile(img, 99)
+    low_percentile = np.percentile(img, 0.1)
+    high_percentile = np.percentile(img, 99.9)
+    img[img < low_percentile] = median
+    img[img > high_percentile] = median
 
-    # Process the patterns
-    if truncate:
-        img[img < low_percentile] = median
-        img[img > high_percentile] = median
+    # Low pass filter
     img = (img - img.min()) / (img.max() - img.min())
-    background = ndimage.gaussian_filter(img.mean(axis=0), img.shape[-1] / 10)
+    img = ndimage.gaussian_filter(img, low_pass_sigma)
+
+    # High pass filter
+    background = ndimage.gaussian_filter(img, high_pass_sigma)
     img = img - background
     img = (img - img.min()) / (img.max() - img.min())
-    if equalize:
-        img = exposure.equalize_adapthist(img)
-        img = (img - img.min()) / (img.max() - img.min())
-    if sigma > 0.0:
-        img = ndimage.gaussian_filter(img, sigma)
-        img = (img - img.min()) / (img.max() - img.min())
+
+    # Truncate step
+    mean, std = img.mean(), img.std()
+    img = np.clip(img, mean - truncate_std_scale * std, mean + truncate_std_scale * std)
+
     return img
 
 
@@ -767,3 +768,33 @@ def make_legend(ax, **kwargs):
     kwargs["framealpha"] = kwargs.get("framealpha", 1)
     kwargs["fancybox"] = kwargs.get("fancybox", False)
     ax.legend(**kwargs)
+
+
+if __name__ == "__main__":
+    sample = "A"  # The sample to analyze, "A" or "B"
+    up2 = "E:/SiGe/a-C03-scan/ScanA_2048x2048.up2"
+    up2 = "E:/SiGe/a-C03-scan/ScanA_1024x1024.up2"
+    ang = "E:/SiGe/a-C03-scan/ScanA.ang"
+    pat_obj, ang_data = get_scan_data(up2, ang)
+    R = get_pattern(pat_obj, 0)
+
+    # Low pass filter
+    R = (R - R.min()) / (R.max() - R.min())
+    R = ndimage.gaussian_filter(R, 2.5)
+
+    # High pass filter
+    background = ndimage.gaussian_filter(R, 51)
+    R = R - background
+    R = (R - R.min()) / (R.max() - R.min())
+
+    # Truncate step
+    mean, std = R.mean(), R.std()
+    s = 3
+    R = np.clip(R, mean - s * std, mean + s * std)
+
+    fig2, ax = plt.subplots(1, 1, figsize=(8, 8))
+    ax.imshow(R, cmap="gray")
+    ax.set_title("Processed Pattern")
+    plt.tight_layout()
+    plt.show()
+    

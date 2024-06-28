@@ -60,6 +60,7 @@ class ICGNOptimizer:
         scan_shape: ARRAY,
         small_strain: bool = False,
         C: np.ndarray = None,
+        correct_geometry: bool = True,
     ) -> None:
         # Get inputs
         self.pat_obj = pat_obj
@@ -67,7 +68,8 @@ class ICGNOptimizer:
         self.detector_tilt = detector_tilt
         self.sample_tilt = sample_tilt
         self.tilt = 90 + sample_tilt - detector_tilt
-        euler = np.array([0.0, 90 + sample_tilt - detector_tilt, 0.0], dtype=float)
+        euler = np.array([180.0, 90 + sample_tilt - detector_tilt, 90.0], dtype=float)
+        # euler = np.array([0.0, 90 + sample_tilt - detector_tilt, 0.0], dtype=float)
         self.Sem2SamR = rotations.eu2om(euler * np.pi / 180).T  # Rotation matrix from SEM to sample reference frame
         self.pixel_size = pixel_size
         self.step_size = step_size
@@ -78,6 +80,7 @@ class ICGNOptimizer:
         self.x0 = self.pidx[x0]
         self.C = C
         self.small_strain = small_strain
+        self.correct_geometry = correct_geometry
 
         # Set the PC calibration to be none
         self.PC_array = np.ones(scan_shape + (3,), dtype=float) * np.array(self.PC)
@@ -95,6 +98,7 @@ class ICGNOptimizer:
         self.image_processing_kwargs = None
         self.homographies = None
         self.verbose = False
+        self.extra_verbose = False
 
         # Run the initialization functions
         self.set_roi()
@@ -102,14 +106,12 @@ class ICGNOptimizer:
         self.set_homography_subset(int(pat_obj.patshape[0] * 0.7), "image")
 
     def set_image_processing_kwargs(
-        self, sigma: NUMBER = None, equalize: bool = True, truncate: bool = True
+        self, low_pass_sigma: NUMBER = 2.5, high_pass_sigma: NUMBER = 101.0, truncate_std_scale: NUMBER = 3.0
     ) -> None:
-        if sigma is None:
-            sigma = self.pat_obj.patshape[0] // 100
         self.image_processing_kwargs = dict = {
-            "sigma": sigma,
-            "equalize": equalize,
-            "truncate": truncate,
+            "high_pass_sigma": high_pass_sigma,
+            "low_pass_sigma": low_pass_sigma,
+            "truncate_std_scale": truncate_std_scale,
         }
 
     def set_roi(self, start: ARRAY = None, span: ARRAY = None, mask: np.ndarray = None):
@@ -234,42 +236,46 @@ class ICGNOptimizer:
 
         Returns:
             np.ndarray: The corrected homography."""
-        D_detector = self.pat_obj.patshape[1] * self.pixel_size
-        theta = np.radians(90 - self.sample_tilt)
-        phi = np.radians(self.detector_tilt)
-        x02, x01 = self.idx2rc(self.x0).astype(float)
-        y, x = np.indices(self.scan_shape).astype(float)
-        x = x01 - x
-        y = x02 - y
-        # Get the x_shift in % of the pattern size
-        x_shift = x * self.step_size / D_detector
-        # Get the pattern center x value in % of the pattern size
-        pc_x_rel = self.PC[0] / self.pat_obj.patshape[1] - x_shift
-        # Convert the pattern center x value to an index
-        pc_x = pc_x_rel * self.pat_obj.patshape[1]
+        if self.correct_geometry:
+            D_detector = self.pat_obj.patshape[1] * self.pixel_size
+            theta = np.radians(90 - self.sample_tilt)
+            phi = np.radians(self.detector_tilt)
+            x02, x01 = self.idx2rc(self.x0).astype(float)
+            y, x = np.indices(self.scan_shape).astype(float)
+            x = x01 - x
+            y = x02 - y
+            # Get the x_shift in % of the pattern size
+            x_shift = x * self.step_size / D_detector
+            # Get the pattern center x value in % of the pattern size
+            pc_x_rel = self.PC[0] / self.pat_obj.patshape[1] - x_shift
+            # Convert the pattern center x value to an index
+            pc_x = pc_x_rel * self.pat_obj.patshape[1]
 
-        # Get the y_shift in % of the pattern size
-        y_shift = y * self.step_size * np.cos(theta) / (D_detector * np.cos(phi))
-        # Get the pattern center y value in % of the pattern size
-        pc_y_rel = self.PC[1] / self.pat_obj.patshape[0] - y_shift
-        # Convert the pattern center y value to an index
-        pc_y = pc_y_rel * self.pat_obj.patshape[0]
+            # Get the y_shift in % of the pattern size
+            y_shift = y * self.step_size * np.cos(theta) / (D_detector * np.cos(phi))
+            # Get the pattern center y value in % of the pattern size
+            pc_y_rel = self.PC[1] / self.pat_obj.patshape[0] - y_shift
+            # Convert the pattern center y value to an index
+            pc_y = pc_y_rel * self.pat_obj.patshape[0]
 
-        # Get the z_shift in % of the pattern size
-        z_shift = y * self.step_size * np.sin(theta + phi) / D_detector
-        # Get the pattern center z value in % of the pattern size
-        pc_z_rel = self.PC[2] / self.pat_obj.patshape[0] - z_shift
-        # Convert the pattern center z value to an index
-        pc_z = pc_z_rel * self.pat_obj.patshape[0]
+            # Get the z_shift in % of the pattern size
+            z_shift = y * self.step_size * np.sin(theta + phi) / D_detector
+            # Get the pattern center z value in % of the pattern size
+            pc_z_rel = self.PC[2] / self.pat_obj.patshape[0] - z_shift
+            # Convert the pattern center z value to an index
+            pc_z = pc_z_rel * self.pat_obj.patshape[0]
 
-        # Store the corrected pattern center
-        self.PC_array = np.array([pc_x, pc_y, pc_z]).transpose(1, 2, 0)
+            # Store the corrected pattern center
+            self.PC_array = np.array([pc_x, pc_y, pc_z]).transpose(1, 2, 0)
 
-        # Get the change in the pattern center
-        delx = self.PC[0] - pc_x 
-        dely = self.PC[1] - pc_y 
-        delz = self.PC[2] - pc_z 
-        self.delPC = np.dstack((delx, dely, delz))
+            # Get the change in the pattern center
+            delx = self.PC[0] - pc_x 
+            dely = self.PC[1] - pc_y 
+            delz = self.PC[2] - pc_z 
+            self.delPC = np.dstack((delx, dely, delz))
+        else:
+            self.PC_array = np.ones(self.scan_shape + (3,), dtype=float) * np.array(self.PC)
+            self.delPC = np.zeros(self.scan_shape + (3,), dtype=float)
 
     def correct_homographies(self, H: np.ndarray) -> np.ndarray:
         x01, x02, DD = self.PC_array[..., 0][self.roi], self.PC_array[..., 1][self.roi], self.PC_array[..., 2][self.roi]
@@ -390,42 +396,46 @@ class ICGNOptimizer:
         T = utilities.get_pattern(self.pat_obj, idx)
         T = utilities.process_pattern(T, **self.image_processing_kwargs)
         T_spline = interpolate.RectBivariateSpline(
-            self.precomputed.x, self.precomputed.y, normalize(T), kx=5, ky=5
+            self.precomputed.x, self.precomputed.y, T, kx=5, ky=5
+            # self.precomputed.x, self.precomputed.y, normalize(T), kx=5, ky=5
         )
         ### T_spline = warp.Spline(T, 5, 5, self.h0, self.subset_slice)
         # Run initial guess
-        # Window and normalize the target
-        t_init = window_and_normalize(T[self.guess_subset_slice])
-        ### T_spline_init = warp.Spline(t_init, 5, 5, self.PC, None)
-        # Do the angle search first
-        t_init_fft = np.fft.fftshift(np.fft.fft2(t_init))
-        t_init_FMT, _ = FMT(
-            t_init_fft,
-            self.precomputed.X_fmt,
-            self.precomputed.Y_fmt,
-            self.precomputed.x_fmt,
-            self.precomputed.y_fmt,
-        )
-        cc = signal.fftconvolve(
-            self.precomputed.r_fmt, t_init_FMT[::-1], mode="same"
-        ).real
-        theta = (np.argmax(cc) - len(cc) / 2) * np.pi / len(cc)
-        # Apply the rotation
-        h = conversions.xyt2h_partial(np.array([[0, 0, -theta]]))[0]
-        ### t_init_rot = T_spline_init.warp(h).reshape(t_init.shape)
-        t_init_rot = warp.deform_image(t_init, h, self.PC)
-        # Do the translation search
-        cc = signal.fftconvolve(
-            self.precomputed.r_init, t_init_rot[::-1, ::-1], mode="same"
-        ).real
-        shift = np.unravel_index(np.argmax(cc), cc.shape) - np.array(cc.shape) / 2
-        # Store the homography
-        measurement = np.array([[-shift[0], -shift[1], -theta]])
-        # Convert the measurements to homographies
-        if self.init_type == "full":
-            p = conversions.xyt2h(measurement, self.PC, self.tilt)
+        if self.init_type is None or self.init_type == "none":
+            p = np.zeros(8, dtype=float)
         else:
-            p = conversions.xyt2h_partial(measurement)
+            # Window and normalize the target
+            t_init = window_and_normalize(T[self.guess_subset_slice])
+            ### T_spline_init = warp.Spline(t_init, 5, 5, self.PC, None)
+            # Do the angle search first
+            t_init_fft = np.fft.fftshift(np.fft.fft2(t_init))
+            t_init_FMT, _ = FMT(
+                t_init_fft,
+                self.precomputed.X_fmt,
+                self.precomputed.Y_fmt,
+                self.precomputed.x_fmt,
+                self.precomputed.y_fmt,
+            )
+            cc = signal.fftconvolve(
+                self.precomputed.r_fmt, t_init_FMT[::-1], mode="same"
+            ).real
+            theta = (np.argmax(cc) - len(cc) / 2) * np.pi / len(cc)
+            # Apply the rotation
+            h = conversions.xyt2h_partial(np.array([[0, 0, -theta]]))[0]
+            ### t_init_rot = T_spline_init.warp(h).reshape(t_init.shape)
+            t_init_rot = warp.deform_image(t_init, h, self.PC)
+            # Do the translation search
+            cc = signal.fftconvolve(
+                self.precomputed.r_init, t_init_rot[::-1, ::-1], mode="same"
+            ).real
+            shift = np.unravel_index(np.argmax(cc), cc.shape) - np.array(cc.shape) / 2
+            # Store the homography
+            measurement = np.array([[-shift[0], -shift[1], -theta]])
+            # Convert the measurements to homographies
+            if self.init_type == "full":
+                p = conversions.xyt2h(measurement, self.PC, self.tilt)
+            else:
+                p = conversions.xyt2h_partial(measurement)
 
         # Run the optimization
         num_iter = 0
@@ -438,7 +448,7 @@ class ICGNOptimizer:
             ### t_deformed = T_spline.warp(p)
             # Compute the residuals
             # e = self.precomputed.r - normalize(t_deformed)
-            e = self.precomputed.r - t_deformed
+            e = self.precomputed.r - normalize(t_deformed)
             residuals.append(np.abs(e).mean())
             # Copmute the gradient of the correlation criterion
             dC_IC_ZNSSD = (
@@ -460,9 +470,26 @@ class ICGNOptimizer:
             # Store the update
             norms.append(norm)
             # print(f"Pattern {idx}: Iteration {num_iter}, Norm: {norm:.4f}, Residual: {residuals[-1]:.4f}")
+            if self.extra_verbose:
+                print(f"Pattern {idx}: Iteration {num_iter}, Norm: {norm:.4f}, Residual: {residuals[-1]:.4f}")
+                row = int(self.precomputed.xi[0].max() - self.precomputed.xi[0].min() + 1)
+                col = int(self.precomputed.xi[1].max() - self.precomputed.xi[1].min() + 1)
+                fig, ax = plt.subplots(1, 3, figsize=(10, 4))
+                ax[0].imshow(self.precomputed.r.reshape(row, col), cmap="gray")
+                ax[0].set_title("Reference")
+                ax[1].imshow(t_deformed.reshape(row, col), cmap="gray")
+                ax[1].set_title("Deformed target")
+                ax[2].imshow(e.reshape(row, col), cmap="gray", vmin=-0.001, vmax=0.001)
+                ax[2].set_title("Final residual")
+                for a in ax.flatten():
+                    a.axis("off")
+                plt.tight_layout()
+                plt.savefig(f"gif/IC-GN_{idx}_{num_iter}.png")
+                plt.close(fig)
             if norm < self.conv_tol:
                 break
-        if num_iter >= self.max_iter and self.verbose:
+        if self.verbose:
+        # if num_iter >= self.max_iter and self.verbose:
             # print(f"Warning: Maximum number of iterations reached for pattern {idx}!")
             row = int(self.precomputed.xi[0].max() - self.precomputed.xi[0].min() + 1)
             col = int(self.precomputed.xi[1].max() - self.precomputed.xi[1].min() + 1)
@@ -478,37 +505,37 @@ class ICGNOptimizer:
             plt.tight_layout()
             plt.savefig(f"gif/IC-GN_{idx}.png")
             plt.close(fig)
-
-            h = conversions.xyt2h_partial(measurement)[0]
-            tar_rot_shift = warp.deform_image(t_init_rot, h, self.PC)
-            fig, ax = plt.subplots(2, 4, figsize=(20, 10), sharex=True, sharey=True)
-            ax[0, 0].imshow(self.precomputed.r_init, cmap="gray")
-            ax[0, 0].set_title("Reference")
-            ax[1, 0].imshow(cc, cmap="gray")
-            ax[1, 0].scatter(cc.shape[1] / 2, cc.shape[0] / 2, c="r", s=100, marker="x")
-            ax[1, 0].scatter(
-                cc.shape[1] / 2 + shift[1],
-                cc.shape[0] / 2 + shift[0],
-                c="r",
-                s=100,
-                marker="*",
-            )
-            ax[1, 0].set_title("Cross-Correlation")
-            ax[0, 1].imshow(t_init, cmap="gray")
-            ax[0, 1].set_title("Target")
-            ax[0, 2].imshow(t_init_rot, cmap="gray")
-            ax[0, 2].set_title("Rotated Target")
-            ax[0, 3].imshow(tar_rot_shift, cmap="gray")
-            ax[0, 3].set_title("Shifted Rotated Target")
-            ax[1, 1].imshow(self.precomputed.r_init - t_init, cmap="gray")
-            ax[1, 1].set_title("Difference")
-            ax[1, 2].imshow(self.precomputed.r_init - t_init_rot, cmap="gray")
-            ax[1, 2].set_title("Difference")
-            ax[1, 3].imshow(self.precomputed.r_init - tar_rot_shift, cmap="gray")
-            ax[1, 3].set_title("Difference")
-            plt.tight_layout()
-            plt.savefig(f"gif/FMT-FCC_{idx}.png")
-            plt.close(fig)
+            if self.init_type is not None and self.init_type != "none":
+                h = conversions.xyt2h_partial(measurement)[0]
+                tar_rot_shift = warp.deform_image(t_init_rot, h, self.PC)
+                fig, ax = plt.subplots(2, 4, figsize=(20, 10), sharex=True, sharey=True)
+                ax[0, 0].imshow(self.precomputed.r_init, cmap="gray")
+                ax[0, 0].set_title("Reference")
+                ax[1, 0].imshow(cc, cmap="gray")
+                ax[1, 0].scatter(cc.shape[1] / 2, cc.shape[0] / 2, c="r", s=100, marker="x")
+                ax[1, 0].scatter(
+                    cc.shape[1] / 2 + shift[1],
+                    cc.shape[0] / 2 + shift[0],
+                    c="r",
+                    s=100,
+                    marker="*",
+                )
+                ax[1, 0].set_title("Cross-Correlation")
+                ax[0, 1].imshow(t_init, cmap="gray")
+                ax[0, 1].set_title("Target")
+                ax[0, 2].imshow(t_init_rot, cmap="gray")
+                ax[0, 2].set_title("Rotated Target")
+                ax[0, 3].imshow(tar_rot_shift, cmap="gray")
+                ax[0, 3].set_title("Shifted Rotated Target")
+                ax[1, 1].imshow(self.precomputed.r_init - t_init, cmap="gray")
+                ax[1, 1].set_title("Difference")
+                ax[1, 2].imshow(self.precomputed.r_init - t_init_rot, cmap="gray")
+                ax[1, 2].set_title("Difference")
+                ax[1, 3].imshow(self.precomputed.r_init - tar_rot_shift, cmap="gray")
+                ax[1, 3].set_title("Difference")
+                plt.tight_layout()
+                plt.savefig(f"gif/FMT-FCC_{idx}.png")
+                plt.close(fig)
 
         return p, int(num_iter), float(residuals[-1]), float(norms[-1])
 
@@ -524,8 +551,9 @@ class ICGNOptimizer:
         residuals_roi = np.array([o[2] for o in out])
         norms_roi = np.array([o[3] for o in out])
         # Correct the homographies
-        self.create_PC_correction()
-        p_roi = self.correct_homographies(p_roi)
+        if self.correct_geometry:
+            self.create_PC_correction()
+            p_roi = self.correct_homographies(p_roi)
         # Store the results
         p[self.roi] = p_roi
         num_iter[self.roi] = num_iter_roi

@@ -62,10 +62,10 @@ def xyt2h(shifts: np.ndarray, PC: tuple | list | np.ndarray, tilt: float | int) 
                    [s1*s3 - c1*c3*s2, c3*s1 + c1*s2*s3, c1*c2]])
     Rs = Rs.transpose(2, 0, 1)
     # Get the global rotation matrix in the detector frame
-    Psr = rotations.eu2om(np.array([0.0, tilt * np.pi / 180, 0.0], dtype=float))
+    # Psr = rotations.eu2om(np.array([0.0, tilt * np.pi / 180, 0.0], dtype=float))
     # Rr = np.matmul(Psr.T, np.matmul(Rs, Psr))
-    Rr = np.matmul(Psr, np.matmul(Rs, Psr.T))
-    # Rr = Rs
+    # Rr = np.matmul(Psr, np.matmul(Rs, Psr.T))
+    Rr = Rs
     Rr = Rr / Rr[..., 2, 2][:, None, None]
 
     ## Now get the homography
@@ -163,6 +163,10 @@ def F2h(Fe: np.ndarray, PC: tuple | list | np.ndarray) -> np.ndarray:
     # Extract the data from the inputs
     x01, x02, DD = PC
     F11, F12, F13, F21, F22, F23, F31, F32 = Fe[..., 0, 0], Fe[..., 0, 1], Fe[..., 0, 2], Fe[..., 1, 0], Fe[..., 1, 1], Fe[..., 1, 2], Fe[..., 2, 0], Fe[..., 2, 1]
+
+    # Negate the detector distance becase our coordinates have +z pointing from the sample towards the detector
+    # The calculation is the opposite, so we need to negate the distance
+    # DD = -DD
 
     # Calculate the homography
     g0 = DD + F31 * x01 + F32 * x02
