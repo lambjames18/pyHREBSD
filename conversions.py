@@ -24,7 +24,7 @@ def xyt2h_partial(measurements: np.ndarray):
         return np.array([_c - 1, -_s, x*_c-y*_s, _s, _c - 1, x*_s+y*_c, _0, _0]).T
 
 
-def xyt2h(shifts: np.ndarray, PC: tuple | list | np.ndarray, tilt: float | int) -> np.ndarray:
+def xyt2h(shifts: np.ndarray, PC: tuple | list | np.ndarray) -> np.ndarray:
     """Convert a translation and rotation to a homography.
 
     Args:

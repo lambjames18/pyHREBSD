@@ -1,7 +1,7 @@
 # Script to create an sub-region ANG file and a .txt grain file from the full ang and grain files
 import os
 import numpy as np
-import ebsd_pattern
+import deprecated.ebsd_pattern as ebsd_pattern
 from skimage import io
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt

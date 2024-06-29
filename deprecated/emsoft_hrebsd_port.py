@@ -1,6 +1,6 @@
 import numpy as np
 from scipy import interpolate, linalg, optimize
-import ebsd_pattern
+import deprecated.ebsd_pattern as ebsd_pattern
 import rotations
 from tqdm.auto import tqdm
 

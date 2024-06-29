@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import rotations
+import Data
 import utilities
 import get_homography
 import conversions
@@ -20,7 +21,7 @@ if __name__ == "__main__":
     detector_tilt = 10.9  # The detector tilt in degrees
     step_size = 0.450  # The step size in um
     subset_size = 819
-    correct_geometry = False
+    fixed_projection = False
     # Set the initial guess parameters
     init_type = "full"  # The type of initial guess to use, "none", "full", or "partial"
     initial_guess_subset_size = 1024
@@ -37,9 +38,9 @@ if __name__ == "__main__":
     # Set the stiffness tensor
     # C = utilities.get_stiffness_tensor(165.77, 63.94, 79.62, structure="cubic")
     C = utilities.get_stiffness_tensor(158.0, 61.0, 78, structure="cubic")
-    # C = None
+    traction_free = True
     # Calculate or read
-    calc = False
+    calc = True
     # Whether to view the reference image
     view_reference = False
     # Number of cores, max iterations, and convergence tolerance if calculating
@@ -51,54 +52,67 @@ if __name__ == "__main__":
     ############################
 
     # Load the pattern object
-    pat_obj, ang_data = utilities.get_scan_data(up2, ang)
-
-    # Create the optimizer
-    optimizer = get_homography.ICGNOptimizer(
-        pat_obj=pat_obj,
-        x0=x0,
-        PC=ang_data.pc,
-        sample_tilt=sample_tilt,
-        detector_tilt=detector_tilt,
-        pixel_size=pixel_size,
-        step_size=step_size,
-        scan_shape=ang_data.shape,
-        small_strain=small_strain,
-        C=C,
-        correct_geometry=correct_geometry,
-    )
-    
-    # Set the image processing parameters
-    optimizer.set_image_processing_kwargs(
-        low_pass_sigma=low_pass_sigma,
-        high_pass_sigma=high_pass_sigma,
-        truncate_std_scale=truncate_std_scale
-        
-    )
-    # Set the region of interest
-    optimizer.set_roi(start=start, span=span)
-    # Set the homography subset
-    optimizer.set_homography_subset(subset_size, "image")
-    # Set the initial guess parameters
-    optimizer.set_initial_guess_params(
-        subset_size=initial_guess_subset_size, init_type=init_type
-    )
-    optimizer.print_setup()
-    if view_reference:
-        optimizer.view_reference()
-    time.sleep(1)
+    # pat_obj, ang_data = utilities.get_scan_data(up2, ang)
+    pat_obj = Data.UP2(up2)
+    ang_data = utilities.read_ang(ang, pat_obj.patshape, segment_grain_threshold=None)
     if calc:
+        # Create the optimizer
+        optimizer = get_homography.ICGNOptimizer(
+            pat_obj=pat_obj,
+            x0=x0,
+            PC=ang_data.pc,
+            sample_tilt=sample_tilt,
+            detector_tilt=detector_tilt,
+            pixel_size=pixel_size,
+            step_size=step_size,
+            scan_shape=ang_data.shape,
+            small_strain=small_strain,
+            C=C,
+            fixed_projection=fixed_projection,
+            traction_free=traction_free,
+        )
+        
+        # Set the image processing parameters
+        optimizer.set_image_processing_kwargs(
+            low_pass_sigma=low_pass_sigma,
+            high_pass_sigma=high_pass_sigma,
+            truncate_std_scale=truncate_std_scale
+            
+        )
+        # Set the region of interest
+        optimizer.set_roi(start=start, span=span)
+        # Set the homography subset
+        optimizer.set_homography_subset(subset_size, "image")
+        # Set the initial guess parameters
+        optimizer.set_initial_guess_params(
+            subset_size=initial_guess_subset_size, init_type=init_type
+        )
+        if view_reference:
+            optimizer.view_reference()
+            time.sleep(1)
+
         # Run the optimizer
         # optimizer.extra_verbose = True
         optimizer.run(
             n_cores=n_cores, max_iter=max_iter, conv_tol=conv_tol, verbose=verbose
         )
-        optimizer.save(f"results/{name}_optimizer.pkl")
-        # optimizer.save_results(f"results/{name}.pkl")
+        results = optimizer.results
+        results.save(f"results/{name}_results.pkl")
     else:
-        optimizer.load(f"results/{name}_optimizer.pkl")
-        # optimizer.load_results("results/CoNi90_DED_ICGN.pkl")
-    e = optimizer.results.e
+        results = get_homography.Results(
+            ang_data.shape,
+            ang_data.pc,
+            x0,
+            step_size / pixel_size,
+            fixed_projection,
+            detector_tilt,
+            sample_tilt,
+            traction_free,
+            small_strain,
+            C,
+        )
+        results.load(f"results/{name}_results.pkl")
+    e = results.strains
     e11 = e[0, :, 0, 0]
     e12 = e[0, :, 0, 1]
     e13 = e[0, :, 0, 2]
@@ -106,18 +120,12 @@ if __name__ == "__main__":
     e23 = e[0, :, 1, 2]
     e33 = e[0, :, 2, 2]
     e_t = e33 - (e11 + e22) / 2
-    w21 = -np.rad2deg(optimizer.results.w[0, :, 0, 1])
-    w13 = np.rad2deg(optimizer.results.w[0, :, 0, 2])
-    w32 = -np.rad2deg(optimizer.results.w[0, :, 1, 2])
-    res = optimizer.results.residuals[0]
-    itr = optimizer.results.num_iter[0]
+    w21 = -np.rad2deg(results.rotations[0, :, 0, 1])
+    w13 = np.rad2deg(results.rotations[0, :, 0, 2])
+    w32 = -np.rad2deg(results.rotations[0, :, 1, 2])
+    res = results.residuals[0]
+    itr = results.num_iter[0]
     x = np.arange(len(e11))
-
-    mask = np.zeros(len(x), dtype=bool)
-
-    color = np.array([(254, 188, 17) for _ in range(len(x))])
-    color[mask] = (0, 54, 96)
-    color = color / 255
 
     fig, ax = plt.subplots(2, 3, figsize=(15, 10))
     ax[0, 0].plot(x, e11, lw=3, c="r", label=r"$\epsilon_{11}$")
