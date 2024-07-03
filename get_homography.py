@@ -74,10 +74,6 @@ class ICGNOptimizer:
         self.conv_tol = 1e-3
         self.max_iter = 50
 
-        # Set the PC calibration to be none
-        self.PC_array = np.ones(scan_shape + (3,), dtype=float) * np.array(self.PC)
-        self.delPC = np.zeros(scan_shape + (3,), dtype=float)
-
         # Set empty attributes
         self.results = None
         self.R = None
@@ -540,8 +536,8 @@ def FMT(image, X, Y, x, y):
 
 class Results:
     def __init__(self,
-                 shape: tuple,
-                 PC: ARRAY,
+                 shape: tuple = None,
+                 PC: ARRAY = None,
                  x0: ARRAY = None,
                  rel_step_size: NUMBER = None,
                  fixed_projection: bool = False,
@@ -613,10 +609,8 @@ class Results:
         self.num_iter[roi] = num_iter_roi
         self.residuals[roi] = residuals_roi
         self.norms[roi] = norms_roi
-        # Get the results
-        self.calculate(roi)
 
-    def calculate(self, roi: np.ndarray = None):
+    def calculate(self, roi: np.ndarray = None) -> None:
         """Calculate the strains, rotations, and stresses from the homographies."""
         if roi is None:
             roi = np.s_[:]

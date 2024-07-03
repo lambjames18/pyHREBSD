@@ -4,6 +4,7 @@
 import os
 import re
 import struct
+import itertools
 from collections import namedtuple
 
 import numpy as np
@@ -482,6 +483,30 @@ def get_stiffness_tensor(*C, structure) -> np.ndarray:
     return C
 
 
+def rotate_stiffness_to_sample_frame(C: np.ndarray, quats: np.ndarray) -> np.ndarray:
+    """Rotate the stiffness tensor to the sample frame.
+
+    Args:
+        C (np.ndarray): The stiffness tensor.
+        quats (np.ndarray): The quaternions.
+
+    Returns:
+        np.ndarray: The rotated stiffness tensor."""
+    if quats.ndim == 1:
+        quats = quats[None, :]
+        out_shape = (6, 6)
+    else:
+        out_shape = quats.shape[:-1] + (6, 6)
+        quats = quats.reshape(-1, 4)
+    # Rotate the stiffness tensor to the sample frame
+    C_rot = np.zeros((quats.shape[0], 6, 6))
+    for i in range(quats.shape[0]):
+        R = rotations.qu2om(quats[i]).T
+        C_rot[i] = rotate_elastic_constants(C, R)
+    C_rot = C_rot.reshape(out_shape)
+    return C_rot
+
+
 def test_bandpass(img, save_dir="./", window_size=128):
     """Run bandpass filtering (using difference of gaussians) on an image.
     Do it for a range of lower and upper sigma values.
@@ -770,31 +795,120 @@ def make_legend(ax, **kwargs):
     ax.legend(**kwargs)
 
 
-if __name__ == "__main__":
-    sample = "A"  # The sample to analyze, "A" or "B"
-    up2 = "E:/SiGe/a-C03-scan/ScanA_2048x2048.up2"
-    up2 = "E:/SiGe/a-C03-scan/ScanA_1024x1024.up2"
-    ang = "E:/SiGe/a-C03-scan/ScanA.ang"
-    pat_obj, ang_data = get_scan_data(up2, ang)
-    R = get_pattern(pat_obj, 0)
+### Elastic constants conversion functions ###
+# Taken from: https://github.com/libAtoms/matscipy/blob/master/matscipy/elasticity.py
 
-    # Low pass filter
-    R = (R - R.min()) / (R.max() - R.min())
-    R = ndimage.gaussian_filter(R, 2.5)
+Voigt_notation = [(0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1)]
 
-    # High pass filter
-    background = ndimage.gaussian_filter(R, 51)
-    R = R - background
-    R = (R - R.min()) / (R.max() - R.min())
 
-    # Truncate step
-    mean, std = R.mean(), R.std()
-    s = 3
-    R = np.clip(R, mean - s * std, mean + s * std)
+def rotate_elastic_constants(C, A, tol=1e-6):
+    """
+    Return rotated elastic moduli for a general crystal given the elastic
+    constant in Voigt notation.
 
-    fig2, ax = plt.subplots(1, 1, figsize=(8, 8))
-    ax.imshow(R, cmap="gray")
-    ax.set_title("Processed Pattern")
-    plt.tight_layout()
-    plt.show()
-    
+    Parameters
+    ----------
+    C : array_like
+        6x6 matrix of elastic constants (Voigt notation).
+    A : array_like
+        3x3 rotation matrix.
+
+    Returns
+    -------
+    C : array
+        6x6 matrix of rotated elastic constants (Voigt notation).
+    """
+
+    A = np.asarray(A)
+
+    # Is this a rotation matrix?
+    if np.sometrue(np.abs(np.dot(np.array(A), np.transpose(np.array(A))) -
+                          np.eye(3, dtype=float)) > tol):
+        raise RuntimeError('Matrix *A* does not describe a rotation.')
+
+    # Rotate
+    return full_3x3x3x3_to_Voigt_6x6(np.einsum('ia,jb,kc,ld,abcd->ijkl',
+                                               A, A, A, A,
+                                               Voigt_6x6_to_full_3x3x3x3(C)))
+
+
+def full_3x3_to_Voigt_6_index(i, j):
+    if i == j:
+        return i
+    return 6-i-j
+
+
+def Voigt_6x6_to_full_3x3x3x3(C):
+    """
+    Convert from the Voigt representation of the stiffness matrix to the full
+    3x3x3x3 representation.
+
+    Parameters
+    ----------
+    C : array_like
+        6x6 stiffness matrix (Voigt notation).
+
+    Returns
+    -------
+    C : array_like
+        3x3x3x3 stiffness matrix.
+    """
+
+    C = np.asarray(C)
+    C_out = np.zeros((3,3,3,3), dtype=float)
+    for i, j, k, l in itertools.product(range(3), range(3), range(3), range(3)):
+        Voigt_i = full_3x3_to_Voigt_6_index(i, j)
+        Voigt_j = full_3x3_to_Voigt_6_index(k, l)
+        C_out[i, j, k, l] = C[Voigt_i, Voigt_j]
+    return C_out
+
+
+def full_3x3x3x3_to_Voigt_6x6(C, tol=1e-3, check_symmetry=True):
+    """
+    Convert from the full 3x3x3x3 representation of the stiffness matrix
+    to the representation in Voigt notation. Checks symmetry in that process.
+    """
+
+    C = np.asarray(C)
+    Voigt = np.zeros((6,6))
+    for i in range(6):
+        for j in range(6):
+            k, l = Voigt_notation[i]
+            m, n = Voigt_notation[j]
+            Voigt[i,j] = C[k,l,m,n]
+            """
+            print('---')
+            print("k,l,m,n", C[k,l,m,n])
+            print("m,n,k,l", C[m,n,k,l])
+            print("l,k,m,n", C[l,k,m,n])
+            print("k,l,n,m", C[k,l,n,m])
+            print("m,n,l,k", C[m,n,l,k])
+            print("n,m,k,l", C[n,m,k,l])
+            print("l,k,n,m", C[l,k,n,m])
+            print("n,m,l,k", C[n,m,l,k])
+            print('---')
+            """
+            if check_symmetry:
+                assert abs(Voigt[i,j]-C[m,n,k,l]) < tol, \
+                    '1 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
+                    .format(i, j, Voigt[i,j], m, n, k, l, C[m,n,k,l])
+                assert abs(Voigt[i,j]-C[l,k,m,n]) < tol, \
+                    '2 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
+                    .format(i, j, Voigt[i,j], l, k, m, n, C[l,k,m,n])
+                assert abs(Voigt[i,j]-C[k,l,n,m]) < tol, \
+                    '3 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
+                    .format(i, j, Voigt[i,j], k, l, n, m, C[k,l,n,m])
+                assert abs(Voigt[i,j]-C[m,n,l,k]) < tol, \
+                    '4 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
+                    .format(i, j, Voigt[i,j], m, n, l, k, C[m,n,l,k])
+                assert abs(Voigt[i,j]-C[n,m,k,l]) < tol, \
+                    '5 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
+                    .format(i, j, Voigt[i,j], n, m, k, l, C[n,m,k,l])
+                assert abs(Voigt[i,j]-C[l,k,n,m]) < tol, \
+                    '6 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
+                    .format(i, j, Voigt[i,j], l, k, n, m, C[l,k,n,m])
+                assert abs(Voigt[i,j]-C[n,m,l,k]) < tol, \
+                    '7 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
+                    .format(i, j, Voigt[i,j], n, m, l, k, C[n,m,l,k])
+
+    return Voigt

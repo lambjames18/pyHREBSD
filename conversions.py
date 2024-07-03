@@ -1,3 +1,4 @@
+import itertools
 import numpy as np
 import rotations
 
@@ -262,16 +263,44 @@ def F2strain(Fe: np.ndarray, C: np.ndarray = None, small_strain: bool = False) -
     if C is None:
         return epsilon, omega
     else:
-        # Assume the surface normal stress is zero to get epsilon_33
-        C3311Xep11 = C[0, 1] * epsilon[..., 0, 0]  #C12 * epsilon11
-        C3322Xep22 = C[1, 2] * epsilon[..., 1, 1]  #C23 * epsilon22
-        C3323Xep23 = C[2, 3] * epsilon[..., 1, 2]  #C34 * epsilon23
-        C3331Xep31 = C[2, 4] * epsilon[..., 2, 0]  #C35 * epsilon31
-        C3312Xep12 = C[0, 5] * epsilon[..., 0, 1]  #C36 * epsilon12
-        epsilon[..., 2, 2] = - (C3311Xep11 + C3322Xep22 + 2*(C3323Xep23 + C3331Xep31 + C3312Xep12)) / C[2, 2]
+        """Assume the surface normal stress is zero to separate e11, e22, e33
+        Solve the following system of equations:
+         0 = C3311*e11 + C3322*e22 + C3333*e33
+         X =     1*e11 +     0*e22 -     1*e33
+         Y =     0*e11 +     1*e22 -     1*e33
+        where X the 11 strain from the deformation gradient (technically e11 - e33) and 
+        Y is the 22 strain from the deformation gradient (technically e22 - e33)"""
+        # Grab elastic constants
+        # C3333 = C[..., 2, 2]  # C33 = C11 for cubic
+        # C3311 = C[..., 0, 2]  # C13 = C12 for cubic
+        # C3322 = C[..., 1, 2]  # C23 = C12 for cubic
+        # # Construct the dependent variables vector
+        # _0 = np.zeros_like(C3333)
+        # _1 = np.ones_like(C3333)
+        # b = np.array([_0, epsilon[..., 0, 0], epsilon[..., 1, 1]])
+        # b = np.moveaxis(b, 0, -1)
+        # # Construct the coefficient matrix and repeat it for broadcasting
+        # A = np.array([[C3311, C3322, C3333], [_1, _0, -1*_1], [_0, _1, -1*_1]])
+        # A = np.transpose(A, (2, 3, 0, 1))
+        # # Solve the system of equations
+        # x = np.linalg.solve(A, b)
+        # # Store the results
+        # epsilon[..., 0, 0] = x[..., 0]
+        # epsilon[..., 1, 1] = x[..., 1]
+        # epsilon[..., 2, 2] = x[..., 2]
+
+        ### Original method for using zero surface traction to get e33
+        C3311Xep11 = C[..., 0, 1] * epsilon[..., 0, 0]  #C12 * epsilon11
+        C3322Xep22 = C[..., 1, 2] * epsilon[..., 1, 1]  #C23 * epsilon22
+        C3323Xep23 = C[..., 2, 3] * epsilon[..., 1, 2]  #C34 * epsilon23
+        C3331Xep31 = C[..., 2, 4] * epsilon[..., 2, 0]  #C35 * epsilon31
+        C3312Xep12 = C[..., 0, 5] * epsilon[..., 0, 1]  #C36 * epsilon12
+        e33 = - (C3311Xep11 + C3322Xep22 + 2*(C3323Xep23 + C3331Xep31 + C3312Xep12)) / C[..., 2, 2]
+        epsilon[..., 2, 2] = e33
+        epsilon[..., 0, 0] += e33
+        epsilon[..., 1, 1] += e33
 
         # Calculate the stress tensor using Hooke's law
-        # Put the strain tensr in voigt notation
         epsilon_voigt = np.zeros(Fe.shape[:-2] + (6,))
         epsilon_voigt[..., 0] = epsilon[..., 0, 0]
         epsilon_voigt[..., 1] = epsilon[..., 1, 1]
@@ -279,7 +308,6 @@ def F2strain(Fe: np.ndarray, C: np.ndarray = None, small_strain: bool = False) -
         epsilon_voigt[..., 3] = epsilon[..., 1, 2] * 2
         epsilon_voigt[..., 4] = epsilon[..., 0, 2] * 2
         epsilon_voigt[..., 5] = epsilon[..., 0, 1] * 2
-        # Calculate the stress tensor
         stress_voigt = np.einsum('...ij,...j', C, epsilon_voigt)
         stress = np.zeros(Fe.shape[:-2] + (3, 3))
         stress[..., 0, 0] = stress_voigt[..., 0]

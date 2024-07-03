@@ -40,11 +40,11 @@ if __name__ == "__main__":
     C = utilities.get_stiffness_tensor(158.0, 61.0, 78, structure="cubic")
     traction_free = True
     # Calculate or read
-    calc = True
+    calc = False
     # Whether to view the reference image
     view_reference = False
     # Number of cores, max iterations, and convergence tolerance if calculating
-    n_cores = 15
+    n_cores = 16
     max_iter = 50
     conv_tol = 1e-4
     # Verbose
@@ -55,12 +55,17 @@ if __name__ == "__main__":
     # pat_obj, ang_data = utilities.get_scan_data(up2, ang)
     pat_obj = Data.UP2(up2)
     ang_data = utilities.read_ang(ang, pat_obj.patshape, segment_grain_threshold=None)
+    # Rotate the stiffness tensor into the sample frame
+    C = utilities.rotate_stiffness_to_sample_frame(C, ang_data.quats)
+    # C = np.ones(ang_data.shape + (6, 6), dtype=float) * C
+    # Correct PC
+    PC = np.array([ang_data.pc[0] - ang_data.shape[1] / 2, ang_data.pc[1] - ang_data.shape[0] / 2, ang_data.pc[2]])
     if calc:
         # Create the optimizer
         optimizer = get_homography.ICGNOptimizer(
             pat_obj=pat_obj,
             x0=x0,
-            PC=ang_data.pc,
+            PC=PC,
             sample_tilt=sample_tilt,
             detector_tilt=detector_tilt,
             pixel_size=pixel_size,
@@ -98,10 +103,12 @@ if __name__ == "__main__":
         )
         results = optimizer.results
         results.save(f"results/{name}_results.pkl")
+        results.calculate(q=ang_data.quats)
+        results.save(f"results/{name}_results.pkl")
     else:
         results = get_homography.Results(
             ang_data.shape,
-            ang_data.pc,
+            PC,
             x0,
             step_size / pixel_size,
             fixed_projection,
@@ -112,6 +119,9 @@ if __name__ == "__main__":
             C,
         )
         results.load(f"results/{name}_results.pkl")
+        results.C = C
+        results.PC_array = np.ones(ang_data.shape + (3,), dtype=float) * PC
+        results.calculate()
     e = results.strains
     e11 = e[0, :, 0, 0]
     e12 = e[0, :, 0, 1]
@@ -141,7 +151,7 @@ if __name__ == "__main__":
     ax[1, 2].plot(x, w21, lw=3, c="tab:purple", label=r"$\omega_{21}$")
     ax[1, 2].plot(x, w32, lw=3, c="tab:brown", label=r"$\omega_{32}$")
 
-    bound = 0.035
+    bound = 0.02
     for a in [ax[0, 0], ax[0, 1], ax[0, 2]]:
         a.set_ylim(-bound, bound)
 
@@ -153,3 +163,5 @@ if __name__ == "__main__":
     plt.subplots_adjust(wspace=0.3, hspace=0.15, left=0.08, right=0.99, top=0.95, bottom=0.05)
     plt.savefig(f"E:/SiGe/{name}_Python-results.png", dpi=300)
     # plt.savefig(f"E:/SiGe/{name}_Python-results_corrected.png", dpi=300)
+    print("Max", e_t.max())
+    print("Max mean", e_t[e_t > 0.005].mean())
