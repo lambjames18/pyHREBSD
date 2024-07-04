@@ -19,6 +19,7 @@ class UP2:
         self.path = path
         self.data = None
         self.i = 0
+        self.start_byte = np.int64(16)
         self.header()
 
     def header(self):
@@ -36,6 +37,7 @@ class UP2:
         bytesPerPixel = 2
         self.nPatterns = int((sizeBytes / bytesPerPixel) / (sz1 * sz2))
         self.patshape = (sz1, sz2)
+        self.pattern_bytes = np.int64(self.patshape[0] * self.patshape[1] * 2)
 
     def read(self, chunks, i=None):
         """Read the next `chunks` bytes from the file. If `i` is not None, read from the current position."""
@@ -49,33 +51,31 @@ class UP2:
 
     def read_pattern(self, i, process=False, p_kwargs={}):
         # Read in the patterns
-        start_byte = np.int64(16)
-        pattern_bytes = np.int64(self.patshape[0] * self.patshape[1] * 2)
-        seek_pos = np.int64(start_byte + np.int64(i) * pattern_bytes)
-        buffer = self.read(chunks=pattern_bytes, i=seek_pos)
+        seek_pos = np.int64(self.start_byte + np.int64(i) * self.pattern_bytes)
+        buffer = self.read(chunks=self.pattern_bytes, i=seek_pos)
         pat = np.frombuffer(buffer, dtype=np.uint16).reshape(self.patshape)
         if process:
             pat = self.process_pattern(pat, **p_kwargs)
         return pat
 
-    def read_patterns(self, idx=-1):
-        if type(idx) == int and idx != -1:
-            return self.read_pattern(idx)
-        elif idx == -1:
-            idx = range(self.nPatterns)
+    def read_patterns(self, idx=-1, process=False, p_kwargs={}):
+        if type(idx) == int:
+            if idx != -1:
+                return self.read_pattern(idx)
+            else:
+                idx = range(self.nPatterns)
         else:
             idx = np.asarray(idx)
 
         # Read in the patterns
-        start_byte = np.int64(16)
-        pattern_bytes = np.int64(self.patshape[0] * self.patshape[1] * 2)
-        in_shape =idx.shape + self.patshape
+        in_shape = idx.shape + self.patshape
         idx = idx.flatten()
-        pats = np.zeros(idx.shape + self.patshape, dtype=np.uint16)
+        if process:
+            pats = np.zeros(idx.shape + self.patshape, dtype=np.float32)
+        else:
+            pats = np.zeros(idx.shape + self.patshape, dtype=np.uint16)
         for i in range(idx.shape[0]):
-            seek_pos = np.int64(start_byte + np.int64(idx[i]) * pattern_bytes)
-            buffer = self.read(pattern_bytes, seek_pos)
-            pats[i] = np.frombuffer(buffer, dtype=np.uint16).reshape(self.patshape)
+            pats[i] = self.read_pattern(idx[i], process, p_kwargs)
         return pats.reshape(in_shape)
 
     def process_pattern(

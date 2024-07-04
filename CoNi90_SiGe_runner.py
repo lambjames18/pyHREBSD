@@ -5,7 +5,8 @@ import matplotlib.pyplot as plt
 import rotations
 import Data
 import utilities
-import get_homography
+import get_homography as gh_cpu
+import get_homography_gpu as gh_gpu
 import conversions
 
 if __name__ == "__main__":
@@ -23,7 +24,7 @@ if __name__ == "__main__":
     subset_size = 819
     fixed_projection = False
     # Set the initial guess parameters
-    init_type = "full"  # The type of initial guess to use, "none", "full", or "partial"
+    init_type = "none"  # The type of initial guess to use, "none", "full", or "partial"
     initial_guess_subset_size = 1024
     # Set the roi parameters
     start = (0, 0)  # The pixel location to start the ROI
@@ -44,20 +45,29 @@ if __name__ == "__main__":
     # Whether to view the reference image
     view_reference = False
     # Number of cores, max iterations, and convergence tolerance if calculating
-    n_cores = 16
+    n_cores = 10
     max_iter = 50
-    conv_tol = 1e-4
+    conv_tol = 1e-3
     # Verbose
     verbose = False
+    gpu = False
     ############################
+
+    if gpu:
+        name += "_gpu"
+        get_homography = gh_gpu
+    else:
+        # name += "_cpu"
+        get_homography = gh_cpu
 
     # Load the pattern object
     # pat_obj, ang_data = utilities.get_scan_data(up2, ang)
     pat_obj = Data.UP2(up2)
     ang_data = utilities.read_ang(ang, pat_obj.patshape, segment_grain_threshold=None)
     # Rotate the stiffness tensor into the sample frame
-    C = utilities.rotate_stiffness_to_sample_frame(C, ang_data.quats)
-    # C = np.ones(ang_data.shape + (6, 6), dtype=float) * C
+    if C is not None:
+        C = utilities.rotate_stiffness_to_sample_frame(C, ang_data.quats)
+        # C = np.ones(ang_data.shape + (6, 6), dtype=float) * C
     # Correct PC
     PC = np.array([ang_data.pc[0] - ang_data.shape[1] / 2, ang_data.pc[1] - ang_data.shape[0] / 2, ang_data.pc[2]])
     if calc:
@@ -98,12 +108,15 @@ if __name__ == "__main__":
 
         # Run the optimizer
         # optimizer.extra_verbose = True
+        # optimizer.run(
+        #     n_cores=n_cores, max_iter=max_iter, conv_tol=conv_tol, verbose=verbose
+        # )
         optimizer.run(
-            n_cores=n_cores, max_iter=max_iter, conv_tol=conv_tol, verbose=verbose
+            batch_size=16, max_iter=max_iter, conv_tol=conv_tol
         )
         results = optimizer.results
         results.save(f"results/{name}_results.pkl")
-        results.calculate(q=ang_data.quats)
+        results.calculate()
         results.save(f"results/{name}_results.pkl")
     else:
         results = get_homography.Results(
@@ -119,9 +132,15 @@ if __name__ == "__main__":
             C,
         )
         results.load(f"results/{name}_results.pkl")
+        results.shape = ang_data.shape
         results.C = C
         results.PC_array = np.ones(ang_data.shape + (3,), dtype=float) * PC
+        results.traction_free = traction_free
+        results.small_strain = small_strain
         results.calculate()
+    h23 = results.homographies[0, :, 5]
+    h22 = results.homographies[0, :, 4]
+    h13 = results.homographies[0, :, 2]
     e = results.strains
     e11 = e[0, :, 0, 0]
     e12 = e[0, :, 0, 1]
@@ -147,9 +166,12 @@ if __name__ == "__main__":
     ax[0, 2].plot(x, e_t, lw=3, c="k", label=r"$\epsilon_{tetragonal}$")
     ax[1, 0].plot(x, res, lw=3, c="k", label="Residuals")
     ax[1, 1].plot(x, itr, lw=3, c="k", label="Num Iterations")
-    ax[1, 2].plot(x, w13, lw=3, c="tab:orange", label=r"$\omega_{13}$")
-    ax[1, 2].plot(x, w21, lw=3, c="tab:purple", label=r"$\omega_{21}$")
-    ax[1, 2].plot(x, w32, lw=3, c="tab:brown", label=r"$\omega_{32}$")
+    # ax[1, 2].plot(x, w13, lw=3, c="tab:orange", label=r"$\omega_{13}$")
+    # ax[1, 2].plot(x, w21, lw=3, c="tab:purple", label=r"$\omega_{21}$")
+    # ax[1, 2].plot(x, w32, lw=3, c="tab:brown", label=r"$\omega_{32}$")
+    ax[1, 2].plot(x, h23, lw=3, c="tab:orange", label=r"$h_{23}$")
+    ax[1, 2].plot(x, h22, lw=3, c="tab:purple", label=r"$h_{22}$")
+    ax[1, 2].plot(x, h13, lw=3, c="tab:brown", label=r"$h_{13}$")
 
     bound = 0.02
     for a in [ax[0, 0], ax[0, 1], ax[0, 2]]:

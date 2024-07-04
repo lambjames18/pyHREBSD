@@ -141,3 +141,78 @@ def pull(inp, grid, bound: List[Bound], spline: List[Spline],
 
     out = out.reshape(list(out.shape[:2]) + oshape)
     return out
+
+
+@torch.jit.script
+def grad(inp, grid, bound: List[Bound], spline: List[Spline],
+         extrapolate: int = 1):
+    """
+    inp: (B, C, *ishape) tensor
+    grid: (B, *oshape, D) tensor
+    bound: List{D}[Bound] tensor
+    spline: List{D}[Spline] tensor
+    extrapolate: int
+    returns: (B, C, *oshape, D) tensor
+    """
+
+    dim = grid.shape[-1]
+    shape = list(inp.shape[-dim:])
+    oshape = list(grid.shape[-dim-1:-1])
+    batch = max(inp.shape[0], grid.shape[0])
+    channel = inp.shape[1]
+
+    grid = grid.reshape([grid.shape[0], -1, grid.shape[-1]])
+    inp = inp.reshape([inp.shape[0], inp.shape[1], -1])
+    mask = inbounds_mask(extrapolate, grid, shape)
+
+    # precompute weights along each dimension
+    weights, grads, _, coords, signs = get_weights(grid, bound, spline, shape,
+                                                   grad=True)
+
+    # initialize
+    out = torch.zeros([batch, channel, grid.shape[1], dim],
+                      dtype=inp.dtype, device=inp.device)
+
+    # iterate across nodes/corners
+    range_nodes = [torch.as_tensor([d for d in range(n)])
+                   for n in [s.order + 1 for s in spline]]
+    if dim == 1:
+        # cartesian_prod does not work as expected when only one
+        # element is provided
+        all_nodes = range_nodes[0].unsqueeze(-1)
+    else:
+        all_nodes = cartesian_prod(range_nodes)
+    for nodes in all_nodes:
+
+        # gather
+        idx = [c[n] for c, n in zip(coords, nodes)]
+        idx = sub2ind_list(idx, shape).unsqueeze(1)
+        idx = idx.expand([batch, channel, idx.shape[-1]])
+        out0 = inp.gather(-1, idx)
+
+        # apply sign
+        sign0: List[Optional[Tensor]] = [sgn[n] for sgn, n in zip(signs, nodes)]
+        sign1: Optional[Tensor] = make_sign(sign0)
+        if sign1 is not None:
+            out0 = out0 * sign1.unsqueeze(1)
+
+        for d in range(dim):
+            out1 = out0.clone()
+            # apply weights
+            for dd, (weight, grad1, n) in enumerate(zip(weights, grads, nodes)):
+                if d == dd:
+                    grad11 = grad1[n]
+                    if grad11 is not None:
+                        out1 = out1 * grad11.unsqueeze(1)
+                else:
+                    out1 = out1 * weight[n].unsqueeze(1)
+
+            # accumulate
+            out.unbind(-1)[d].add_(out1)
+
+    # out-of-bounds mask
+    if mask is not None:
+        out = out * mask.unsqueeze(-1)
+
+    out = out.reshape(list(out.shape[:2]) + oshape + list(out.shape[-1:]))
+    return out

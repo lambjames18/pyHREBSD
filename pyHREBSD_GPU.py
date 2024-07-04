@@ -3,6 +3,7 @@ from scipy import interpolate
 from tqdm.auto import tqdm
 import torch
 import mpire
+import bspline_gpu as gpu_warp
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -159,18 +160,9 @@ def IC_GN(p0, r, T, dr_tilde, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter
 # Vectorized versions
 
 
-def W_alt_gpu(p) -> np.ndarray:
-    """Return the shape function matrix for the given homography parameters.
-    Args:
-        p (np.ndarray): The homography parameters.
-    Returns:
-        np.ndarray: The shape function matrix."""
-    return torch.cat((p, torch.zeros(1)), dim=-1).reshape(3, 3) + torch.eye(3)
-
-
 def W_vectorized_gpu(p) -> torch.Tensor:
     """Convert homographies into a shape function.
-    Assumes p is a (Nx8) array."""
+    Assumes p is a (B, 8) array."""
     in_shape = p.shape[:-1]
     _0 = torch.zeros(in_shape + (1,), device=device)
     return torch.cat((p, _0), dim=-1).reshape(in_shape + (3, 3,)) + torch.eye(3, device=device)[None, ...]
@@ -190,10 +182,10 @@ def normalize_vectorized_gpu(img):
 
 def dp_norm_vectorized_gpu(dp, xi) -> float:
     """Compute the norm of the delta p vector.
-    Assumes dp is a (Nx8) array and xi is a (2,M) array."""
-    xi1max = xi[0].max()
-    xi2max = xi[1].max()
-    ximax = torch.tensor([[xi1max, xi2max]], device=device)
+    Assumes dp is a (B, 8) array and xi is a (*, 2) array."""
+    xi1max = xi[..., 0].max()
+    xi2max = xi[..., 1].max()
+    ximax = torch.tensor([[xi1max, xi2max]], device=device)  # Bx2
     dp_i0 = torch.square(dp[:, 0:2] * ximax).sum(axis=-1)
     dp_i1 = torch.square(dp[:, 3:5] * ximax).sum(axis=-1)
     dp_i2 = torch.square(dp[:, 6:8] * ximax).sum(axis=-1)
@@ -201,92 +193,81 @@ def dp_norm_vectorized_gpu(dp, xi) -> float:
     return out
 
 
-def deform_alt(xi: np.ndarray, spline: interpolate.RectBivariateSpline, p: np.ndarray) -> np.ndarray:
-    """Deform a subset using a homography.
-    TODO: Need to make it so that out-of-bounds points are replaced with noise.
-
-    Args:
-        xi (np.ndarray): The subset coordinates. Shape is (2, N).
-        spline (interpolate.RectBivariateSpline): The biquintic B-spline of the subset.
-        p (np.ndarray): The homography parameters. Shape is (8,)."""
-    xi_prime = get_xi_prime_alt_gpu(xi, p).detach().cpu().numpy()
-    out = spline(xi_prime[0], xi_prime[1], grid=False)
-    return torch.tensor(out)
-
-
-def get_xi_prime_alt_gpu(xi, p) -> np.ndarray:
+def get_xi_prime_vectorized_gpu(xi, p) -> np.ndarray:
     """Convert the subset coordinates to the deformed subset coordinates using the homography.
 
     Args:
-        xi (np.ndarray): The subset coordinates. Shape is (2, N).
-        p (np.ndarray): The homography parameters. Shape is (8,).
+        xi (np.ndarray): The subset coordinates. Shape is (H, W, 2).
+        p (np.ndarray): The homography parameters. Shape is (B, 8).
 
     Returns:
-        np.ndarray: The deformed subset coordinates. Shape is (2, N)."""
-    Wp = W_alt_gpu(p)
-    xi_3d = torch.vstack((xi, torch.ones(xi.shape[1])))
-    xi_prime = torch.matmul(Wp, xi_3d)
-    return xi_prime[:2] / xi_prime[2]
+        np.ndarray: The deformed subset coordinates. Shape is (B, H, W, 2)."""
+    # Get dimensions
+    batch_size = p.shape[0]
+    shape = xi.shape[:-1]
+    # Get shape function of homography
+    Wp = W_vectorized_gpu(p)  # Bx3x3
+    # Convert xi to 3D
+    xi_3d = torch.cat((xi, torch.ones(*shape, 1, device=device)), dim=-1)  # HxWx3
+    xi_3d = xi_3d.reshape(-1, 3).T  # 3xH*W
+    xi_prime = torch.matmul(Wp, xi_3d)  # Bx3x3 @ 3xH*W -> Bx3xH*W
+    xi_prime = xi_prime[:, :2, :] / xi_prime[:, 1:, :]  # Bx2xH*W
+    xi_prime = torch.transpose(xi_prime, 1, 2).reshape(batch_size, *shape, 2)  # BxHxWx2
+    return xi_prime
 
 
 def IC_GN_vectorized(p0, r, T, r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3, max_iter=50):
-    # Precompute the target subset
-    print("Precomputing target subsets...")
-    with mpire.WorkerPool(n_jobs=mpire.cpu_count() // 2) as pool:
-        T_splines = pool.map(target_precompute, [(T[i], PC) for i in range(len(T))])
-
+    # Get shape variables
+    print(r.shape, T.shape, xi.shape)
+    shape = np.sqrt(r.shape[0]).astype(int)
+    batch = T.shape[0]
     # Convert the inputs to torch tensors
     print("Converting inputs to torch tensors...")
-    r = torch.tensor(r, device=device).float()  # M
-    T = torch.tensor(T, device=device).float()  # NxM
-    p = torch.tensor(p0, device=device).float()  # Nx8
+    r = torch.tensor(r, device=device).float().reshape(1, 1, shape, shape)  # 1x1xHxW
+    T = torch.tensor(T, device=device).float().reshape(batch, 1, shape, shape)  # Bx1xHxW
+    p = torch.tensor(p0, device=device).float()  # Bx8
     NablaR_dot_Jac = torch.tensor(NablaR_dot_Jac, device=device).float()  # 8x8
     H = torch.tensor(H, device=device).float()  # 8x8
-    xi = torch.tensor(xi, device=device).float()  # 2xM
+    xi = torch.tensor(xi.T, device=device).float().reshape(shape, shape, 2)  # 2xM
+    print(r.shape, T.shape, xi.shape)
 
     # Precompute cholesky decomposition of H
     print("Precomputing Cholesky decomposition of H...")
     L = torch.linalg.cholesky(H)
+
+    # Precompute the spline and bounds
+    bound_fn = gpu_warp.make_bound([0, 0])
+    spline_fn = gpu_warp.make_spline([5, 5])
 
     # Run the iterations
     num_iter = torch.zeros(T.shape[0], dtype=int, device=device)
     norms = torch.zeros(T.shape[0], device=device)
     residuals = torch.zeros(T.shape[0], device=device)
     active = torch.ones(T.shape[0], dtype=bool, device=device)
-    # N is the number of targets
-    # n is the number of targets that have converged
-    # M is the number of pixels in a target
-    print(f"Number of targets (N): {T.shape[0]}")
-    print(f"Number of pixels in a target (M): {r.shape[0]}")
+    print(f"Number of targets (B): {T.shape[0]}")
+    print(f"Height (H): {shape}")
+    print(f"Width (W): {shape}")
     while True:
-        num_iter[active] += 1
-        xi = xi.cpu()
-        p = p.cpu()
-        with mpire.WorkerPool(n_jobs=mpire.cpu_count() // 2) as pool:
-            t_deformed = pool.map(deform_alt, [(xi, T_splines[i], p[i]) for i in range(len(T_splines)) if active[i]])
-        xi = xi.to(device)
-        p = p.to(device)
-        # t_deformed = []
-        # for i in range(len(T_splines)):
-        #     if active[i]:
-        #         t_deformed.append(deform(xi, T_splines[i], p[i]))
-        t_deformed = torch.stack(t_deformed).float().to(device)  # (N-n) x M
-        e = r - normalize_vectorized_gpu(t_deformed)  # (N-n) x M
-        residuals[active] = torch.abs(e).mean(dim=1)  # (N-n)
-        dC_IC_ZNSSD = 2 / r_zmsv * torch.einsum('ij,kj->ik', e, NablaR_dot_Jac)  # 8 x (N - n)
-        dp = torch.cholesky_solve(-dC_IC_ZNSSD.T, L).T  # (N - n) x 8
-        norms_temp = dp_norm_vectorized_gpu(dp, xi)  # (N - n)
-        Wp = W_vectorized_gpu(p[active])  # (N - n) x 3 x 3
-        Wdp = W_vectorized_gpu(dp)  # (N - n) x 3 x 3
-        Wpdp = Wp @ torch.linalg.inv(Wdp)  # (N - n) x 3 x 3
-        p_temp = ((Wpdp / Wpdp[:, 2, 2][:, None, None]) - torch.eye(3, device=device)[None, ...])  # (N - n) x 3 x 3
-        p_temp = p_temp.reshape(-1, 9)[:, :8]  # (N - n) x 8
-        p[active] = p_temp
-        norms[active] = norms_temp
-        # Update the active targets
-        active = norms > conv_tol
-        print(f"Iteration {num_iter.max()}: Number of active targets: {active.sum()}")
-        if active.sum() == 0:
+        num_iter += 1
+        # Rotate the coordinates and warp the target subset
+        xi_prime = get_xi_prime_vectorized_gpu(xi, p)  # BxHxWx2
+        t_deformed = gpu_warp.pull(T, xi_prime, bound_fn, spline_fn, extrapolate=False)  # Bx1xHxW
+        # Compute the residuals
+        e = (r - normalize_vectorized_gpu(t_deformed)).reshape(batch, -1)  # BxM
+        residuals = torch.abs(e).mean(dim=1)  # B
+        # Compute the gradient of the correlation criterion
+        dC_IC_ZNSSD = 2 / r_zmsv * torch.einsum('ij,kj->ik', e, NablaR_dot_Jac).T  # Bx8
+        # Find the deformation increment
+        dp = torch.cholesky_solve(-dC_IC_ZNSSD, L).T  # Bx8, 8x8 -> Bx8
+        # Update the parameters
+        Wp = W_vectorized_gpu(p[active])  # Bx3x3
+        Wdp = W_vectorized_gpu(dp)  # Bx3x3
+        Wpdp = Wp @ torch.linalg.inv(Wdp)  # Bx3x3
+        p = ((Wpdp / Wpdp[:, 2, 2][:, None, None]) - torch.eye(3, device=device)[None, ...])  # Bx3x3
+        p = p.reshape(-1, 9)[:, :8]  # Bx8
+        # Compute the norm of the deformation increment and check for convergence
+        norms = dp_norm_vectorized_gpu(dp, xi)  # B
+        if norms.max() < conv_tol:
             break
         elif num_iter.max() >= max_iter:
             print("Warning: Maximum number of iterations reached!")
@@ -295,4 +276,4 @@ def IC_GN_vectorized(p0, r, T, r_zmsv, NablaR_dot_Jac, H, xi, PC, conv_tol=1e-3,
     p = p.detach().cpu().numpy()
     num_iter = num_iter.detach().cpu().numpy().astype(int)
     residuals = residuals.detach().cpu().numpy().astype(float)
-    return p#, num_iter, residuals
+    return p, num_iter, residuals

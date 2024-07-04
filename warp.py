@@ -1,5 +1,6 @@
 import numpy as np
 from scipy import interpolate
+import torch
 
 
 class Spline:
@@ -125,4 +126,37 @@ def W(p) -> np.ndarray:
             return np.squeeze(np.concatenate((p, _0), axis=-1).reshape(in_shape + (3, 3,)) + np.eye(3)[None, None, ...])
         else:
             raise ValueError("p must be 1, 2, or 3 dimensions.")
-        
+
+
+### GPU functions
+
+def W_vectorized_gpu(p) -> torch.Tensor:
+    """Convert homographies into a shape function.
+    Assumes p is a (B, 8) array."""
+    in_shape = p.shape[:-1]
+    _0 = torch.zeros(in_shape + (1,))
+    return torch.cat((p, _0), dim=-1).reshape(in_shape + (3, 3,)) + torch.eye(3)[None, ...]
+
+
+def get_xi_prime_vectorized_gpu(xi, p) -> np.ndarray:
+    """Convert the subset coordinates to the deformed subset coordinates using the homography.
+
+    Args:
+        xi (np.ndarray): The subset coordinates. Shape is (H, W, 2).
+        p (np.ndarray): The homography parameters. Shape is (B, 8).
+
+    Returns:
+        np.ndarray: The deformed subset coordinates. Shape is (B, H, W, 2)."""
+    # Get dimensions
+    batch_size = p.shape[0]
+    shape = xi.shape[:-1]
+    # Get shape function of homography
+    Wp = W_vectorized_gpu(p)  # Bx3x3
+    # Convert xi to 3D
+    xi_3d = torch.cat((xi, torch.ones(*shape, 1)), dim=-1)  # HxWx3
+    xi_3d = xi_3d.reshape(-1, 3).T  # 3xH*W
+    xi_prime = torch.einsum("bij,jk->bik", Wp, xi_3d)  # Bx3x3 @ 3xH*W -> Bx3xH*W
+    # xi_prime = torch.matmul(Wp, xi_3d)  # Bx3x3 @ 3xH*W -> Bx3xH*W
+    xi_prime = xi_prime[:, :2, :] / xi_prime[:, -1:, :]  # Bx2xH*W
+    xi_prime = torch.transpose(xi_prime, 1, 2).reshape(batch_size, *shape, 2)  # BxHxWx2
+    return xi_prime

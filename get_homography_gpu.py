@@ -6,42 +6,25 @@ from scipy import linalg, interpolate, signal
 from tqdm.auto import tqdm
 import mpire
 import dill
+import torch
 
 import rotations
 import utilities
 import warp
 import conversions
+import bspline_gpu as gpu_warp
 
 # Type hints
 ARRAY = np.ndarray | list | tuple
 NUMBER = int | float
 
-# Get the number of physical cores
-NUM_PHYSICAL_CORES = int(mpire.cpu_count() // 2)
+if torch.cuda.is_available():
+    torch.set_default_device("cuda")
+else:
+    torch.set_default_device("cpu")
 
 # Create some namedtuples
-ReferencePrecompute = namedtuple(
-    "ReferencePrecompute",
-    [
-        "r",
-        "r_zmsv",
-        "NablaR_dot_Jac",
-        "c",
-        "L",
-        "xi",
-        "x",
-        "y",
-        "r_init",
-        "r_fft",
-        "r_fmt",
-        "x_fmt",
-        "y_fmt",
-        "X_fmt",
-        "Y_fmt",
-    ],
-)
-
-ICGN_Pre = namedtuple("ICGN_Pre", ["r", "r_zmsv", "NablaR_dot_Jac", "c", "L", "xi", "x", "y"])
+ICGN_Pre = namedtuple("ICGN_Pre", ["r", "r_zmsv", "NablaR_dot_Jac", "L", "xi", "x", "y"])
 FMTCC_Pre = namedtuple("FMTCC_Pre", ["r_init", "r_fft", "r_fmt", "x_fmt", "y_fmt", "X_fmt", "Y_fmt"])
 
 
@@ -197,39 +180,45 @@ class ICGNOptimizer:
     def reference_precompute(self) -> None:
         """Precompute arrays/values for the reference subset for the IC-GN algorithm."""
         # Get the reference image and process it
-        # self.R = utilities.get_pattern(self.pat_obj, self.x0)
-        # self.R = utilities.process_pattern(self.R, **self.image_processing_kwargs)
         self.R = self.pat_obj.read_pattern(self.x0, process=True, p_kwargs=self.image_processing_kwargs)
-        # Get the IC-GN sub-pixel alignment precomuted items
+        shape = self.R[self.subset_slice].shape
+        R = torch.tensor(self.R, dtype=torch.float32).cuda().unsqueeze(0).unsqueeze(0)
         # Get coordinates
-        x = np.arange(self.R.shape[1]) - self.h0[0]
-        y = np.arange(self.R.shape[0]) - self.h0[1]
-        X, Y = np.meshgrid(x, y)
-        xi = np.array([Y[self.subset_slice].flatten(), X[self.subset_slice].flatten()])
-        # Compute the intensity gradients of the subset
-        # spline = warp.Spline(self.R, 5, 5, self.h0, self.subset_slice)
-        # GR = spline.gradient()
-        # r = spline(xi[0], xi[1], grid=False, normalize=False).flatten()
-        spline = interpolate.RectBivariateSpline(x, y, self.R, kx=5, ky=5)
-        GRx = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
-        GRy = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
-        GR = np.vstack((GRx, GRy)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
-        r = spline(xi[0], xi[1], grid=False).flatten()
-        r_zmsv = np.sqrt(((r - r.mean()) ** 2).sum())
-        r = (r - r.mean()) / r_zmsv
+        x = torch.arange(R.shape[3])
+        y = torch.arange(R.shape[2])
+        X, Y = torch.meshgrid(x, y, indexing="xy")
+        xi = torch.stack([Y[self.subset_slice], X[self.subset_slice]], dim=-1).float().unsqueeze(0)  # 1xHxWx2
+        # Compute the intensity gradients of the subset and the subset intensities
+        bound_fn = gpu_warp.make_bound([0, 0])
+        spline_fn = gpu_warp.make_spline([5, 5])
+        GR = gpu_warp.grad(R, xi, bound_fn, spline_fn, extrapolate=1)  # 1xHxWx2
+        # GR[..., 0], GR[..., 1] = GR[..., 1], GR[..., 0]  # Swap the x and y gradients
+        GR = torch.transpose(GR.reshape(1, -1, 2), 1, 2)  # 1x2xN
+        r = gpu_warp.pull(R, xi, bound_fn, spline_fn, extrapolate=1)
+        r_zmsv = torch.sqrt(((r - r.mean()) ** 2).sum())
+        r = ((r - r.mean()) / r_zmsv).reshape(1, 1, *shape)
         # Compute the jacobian of the shape function
-        _1 = np.ones(xi.shape[1])
-        _0 = np.zeros(xi.shape[1])
-        out0 = np.array([[xi[0], xi[1], _1, _0, _0, _0, -xi[0] ** 2, -xi[1] * xi[0]]])
-        out1 = np.array([[_0, _0, _0, xi[0], xi[1], _1, -xi[0] * xi[1], -xi[1] ** 2]])
-        Jac = np.vstack((out0, out1))  # 2x8xN
+        xi0 = xi[0, ..., 0].reshape(-1)
+        xi1 = xi[0, ..., 1].reshape(-1)
+        _0 = torch.zeros_like(xi1)
+        _1 = torch.ones_like(xi1)
+        out0 = torch.stack([xi0, xi1, _1, _0, _0, _0, -xi0 ** 2, -xi1 * xi0], dim=0)  # 8xH*W
+        out1 = torch.stack([_0, _0, _0, xi0, xi1, _1, -xi0 * xi1, -xi1 ** 2], dim=0)
+        Jac = torch.stack([out0, out1], dim=0)  # 2x8xH*W
         # Multiply the gradients by the jacobian
-        NablaR_dot_Jac = np.einsum("ilk,ljk->ijk", GR, Jac)[0]  # 1x8xN
-        # Compute the Hessian
-        H = 2 / r_zmsv**2 * NablaR_dot_Jac.dot(NablaR_dot_Jac.T)
-        (c, L) = linalg.cho_factor(H)
-        self.icgn_pre = ICGN_Pre(r, r_zmsv, NablaR_dot_Jac, c, L, xi, x, y)
+        NablaR_dot_Jac = torch.einsum("ilk,ljk->ijk", GR, Jac)[0]  # 8xH*W
+        H = 2 / r_zmsv**2 * torch.matmul(NablaR_dot_Jac, NablaR_dot_Jac.T)  # 8x8
+        # Compute the Cholesky decomposition
+        L = torch.linalg.cholesky(H)
+        del GR, Jac, H, bound_fn, spline_fn, X, Y
+        # Store the precomputed values
+        return r, r_zmsv, NablaR_dot_Jac, L, xi
+        self.icgn_pre = ICGN_Pre(r, r_zmsv, NablaR_dot_Jac, L, xi, x, y)
+
+        # Precompute the FMT-FCC initial guess
         if self.init_type is not None and self.init_type != "none":
+            print("Precomputing the FMT-FCC initial guess...")
+            raise NotImplementedError("FMT-FCC initial guess is not implemented yet on the GPU!")
             # Get the FMT-FCC initial guess precomputed items
             r_init = window_and_normalize(self.R[self.guess_subset_slice])
             # Get the dimensions of the image
@@ -251,173 +240,132 @@ class ICGNOptimizer:
             r_FMT, _ = FMT(r_fft, X_fmt, Y_fmt, x_fmt, y_fmt)
             self.fmtcc_pre = FMTCC_Pre(r_init, r_fft, r_FMT, x_fmt, y_fmt, X_fmt, Y_fmt)
 
-    def run(
-        self, n_cores=NUM_PHYSICAL_CORES, max_iter=50, conv_tol=1e-3, verbose=False
-    ) -> np.ndarray:
+    def run(self, batch_size=32, max_iter=50, conv_tol=1e-3) -> np.ndarray:
         """Run the homography optimization."""
         # Precompute the reference subset
-        indices = self.pidx[self.roi]
-        self.reference_precompute()
-        self.max_iter = max_iter
-        self.conv_tol = conv_tol
-        self.verbose = verbose
+        r, r_zmsv, NablaR_dot_Jac, L, xi = self.reference_precompute()
+        # Split indices into batches
+        indices = torch.tensor(self.pidx[self.roi].flatten(), dtype=torch.int64).cuda()
+        indices_split = torch.split(indices, batch_size)
+        # Create spline stuff
+        bound_fn = gpu_warp.make_bound([0, 0])
+        spline_fn = gpu_warp.make_spline([5, 5])
         # Run the optimization
         print("Running the homography optimization...")
-        if n_cores > 1:
-            with mpire.WorkerPool(n_jobs=n_cores, use_dill=True) as pool:
-                out = pool.map(self.run_single, [i for i in indices], progress_bar=True, iterable_len=self.num_points)
-        else:
-            out = [self.run_single(idx) for idx in tqdm(indices)]
-        # Store the results
-        self.results.update(out, self.roi)
-
-    def run_single(self, idx: int) -> np.ndarray:
-        """Run the homography optimization for a single point."""
-        # Get the target image and process it
-        # T = utilities.get_pattern(self.pat_obj, idx)
-        # T = utilities.process_pattern(T, **self.image_processing_kwargs)
-        T = self.pat_obj.read_pattern(idx, process=True, p_kwargs=self.image_processing_kwargs)
-        T_spline = interpolate.RectBivariateSpline(
-            self.icgn_pre.x, self.icgn_pre.y, T, kx=5, ky=5
-            # self.precomputed.x, self.precomputed.y, normalize(T), kx=5, ky=5
-        )
-        ### T_spline = warp.Spline(T, 5, 5, self.h0, self.subset_slice)
-        # Run initial guess
-        if self.init_type is None or self.init_type == "none":
-            p = np.zeros(8, dtype=float)
-        else:
-            # Window and normalize the target
-            t_init = window_and_normalize(T[self.guess_subset_slice])
-            ### T_spline_init = warp.Spline(t_init, 5, 5, self.PC, None)
-            # Do the angle search first
-            t_init_fft = np.fft.fftshift(np.fft.fft2(t_init))
-            t_init_FMT, _ = FMT(
-                t_init_fft,
-                self.fmtcc_pre.X_fmt,
-                self.fmtcc_pre.Y_fmt,
-                self.fmtcc_pre.x_fmt,
-                self.fmtcc_pre.y_fmt,
-            )
-            cc = signal.fftconvolve(
-                self.fmtcc_pre.r_fmt, t_init_FMT[::-1], mode="same"
-            ).real
-            theta = (np.argmax(cc) - len(cc) / 2) * np.pi / len(cc)
-            # Apply the rotation
-            h = conversions.xyt2h_partial(np.array([[0, 0, -theta]]))[0]
-            ### t_init_rot = T_spline_init.warp(h).reshape(t_init.shape)
-            t_init_rot = warp.deform_image(t_init, h, self.PC)
-            # Do the translation search
-            cc = signal.fftconvolve(
-                self.fmtcc_pre.r_init, t_init_rot[::-1, ::-1], mode="same"
-            ).real
-            shift = np.unravel_index(np.argmax(cc), cc.shape) - np.array(cc.shape) / 2
-            # Store the homography
-            measurement = np.array([[-shift[0], -shift[1], -theta]])
-            # Convert the measurements to homographies
-            if self.init_type == "full":
-                p = conversions.xyt2h(measurement, self.PC)
+        residuals_out = []
+        norms_out = []
+        num_iters_out = []
+        homographies_out = []
+        for idx in tqdm(indices_split, desc="ICGN", unit="batches"):
+            # Get the target images and process them
+            T = self.pat_obj.read_patterns(idx.cpu().numpy(), process=True, p_kwargs=self.image_processing_kwargs)
+            T = torch.tensor(T, dtype=torch.float32).cuda().unsqueeze(1)
+            # Run homography initialization
+            if self.init_type is None or self.init_type == "none":
+                p = torch.zeros((len(idx), 8), dtype=torch.float32).cuda()
             else:
-                p = conversions.xyt2h_partial(measurement)
-
-        # Run the optimization
-        num_iter = 0
-        norms = []
-        residuals = []
-        while num_iter < self.max_iter:
-            # Warp the target subset
-            num_iter += 1
-            t_deformed = warp.deform(self.icgn_pre.xi, T_spline, p)
-            t_mean = t_deformed.mean()
-            t_deformed = (t_deformed - t_mean) / np.sqrt(((t_deformed - t_mean) ** 2).sum())
-            # Compute the residuals
-            e = self.icgn_pre.r - t_deformed
-            residuals.append(np.abs(e).mean())
-            # Copmute the gradient of the correlation criterion
-            dC_IC_ZNSSD = (
-                2
-                / self.icgn_pre.r_zmsv
-                * np.matmul(e, self.icgn_pre.NablaR_dot_Jac.T)
-            )  # 8x1
-            # Find the deformation incriment, delta_p, by solving the linear system
-            # H.dot(delta_p) = -dC_IC_ZNSSD using the Cholesky decomposition
-            dp = linalg.cho_solve(
-                (self.icgn_pre.c, self.icgn_pre.L), -dC_IC_ZNSSD.reshape(-1, 1)
-            )[:, 0]
-            # Update the parameters
-            norm = dp_norm(dp, self.icgn_pre.xi)
-            Wp = warp.W(p)
-            Wdp = warp.W(dp)
-            Wpdp = np.matmul(Wp, np.linalg.inv(Wdp))
-            p = ((Wpdp / Wpdp[2, 2]) - np.eye(3)).reshape(9)[:8]
-            # Store the update
-            norms.append(norm)
-            # print(f"Pattern {idx}: Iteration {num_iter}, Norm: {norm:.4f}, Residual: {residuals[-1]:.4f}")
-            if norm < self.conv_tol:
-                break
-        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
-        ax[0].imshow(self.icgn_pre.r.reshape(818, 818), cmap="gray")
-        ax[0].set_title("Reference")
-        ax[0].axis("off")
-        ax[1].imshow(t_deformed.reshape(818, 818), cmap="gray")
-        ax[1].set_title("Deformed Target")
-        ax[1].axis("off")
-        ax[2].imshow(np.abs(e).reshape(818, 818), cmap="gray")
-        ax[2].set_title("Residuals")
-        ax[2].axis("off")
-        plt.tight_layout()
-        plt.savefig(f"./gif/{idx}_CPU.png")
-        plt.close("all")
-        
-        if self.verbose:
-        # if num_iter >= self.max_iter and self.verbose:
-            # print(f"Warning: Maximum number of iterations reached for pattern {idx}!")
-            row = int(self.icgn_pre.xi[0].max() - self.icgn_pre.xi[0].min() + 1)
-            col = int(self.icgn_pre.xi[1].max() - self.icgn_pre.xi[1].min() + 1)
-            fig, ax = plt.subplots(1, 3, figsize=(10, 4))
-            ax[0].imshow(self.icgn_pre.r.reshape(row, col), cmap="gray")
-            ax[0].set_title("Reference")
-            ax[1].imshow(t_deformed.reshape(row, col), cmap="gray")
-            ax[1].set_title("Deformed target")
-            ax[2].imshow(e.reshape(row, col), cmap="gray")
-            ax[2].set_title("Final residual")
-            for a in ax.flatten():
-                a.axis("off")
-            plt.tight_layout()
-            plt.savefig(f"gif/IC-GN_{idx}.png")
-            plt.close(fig)
-            if self.init_type is not None and self.init_type != "none":
-                h = conversions.xyt2h_partial(measurement)[0]
-                tar_rot_shift = warp.deform_image(t_init_rot, h, self.PC)
-                fig, ax = plt.subplots(2, 4, figsize=(20, 10), sharex=True, sharey=True)
-                ax[0, 0].imshow(self.fmtcc_pre.r_init, cmap="gray")
-                ax[0, 0].set_title("Reference")
-                ax[1, 0].imshow(cc, cmap="gray")
-                ax[1, 0].scatter(cc.shape[1] / 2, cc.shape[0] / 2, c="r", s=100, marker="x")
-                ax[1, 0].scatter(
-                    cc.shape[1] / 2 + shift[1],
-                    cc.shape[0] / 2 + shift[0],
-                    c="r",
-                    s=100,
-                    marker="*",
+                raise NotImplementedError("Homography initialization on GPU is not implemented yet!")
+                # Window and normalize the target
+                t_init = window_and_normalize(T[self.guess_subset_slice])
+                ### T_spline_init = warp.Spline(t_init, 5, 5, self.PC, None)
+                # Do the angle search first
+                t_init_fft = np.fft.fftshift(np.fft.fft2(t_init))
+                t_init_FMT, _ = FMT(
+                    t_init_fft,
+                    self.fmtcc_pre.X_fmt,
+                    self.fmtcc_pre.Y_fmt,
+                    self.fmtcc_pre.x_fmt,
+                    self.fmtcc_pre.y_fmt,
                 )
-                ax[1, 0].set_title("Cross-Correlation")
-                ax[0, 1].imshow(t_init, cmap="gray")
-                ax[0, 1].set_title("Target")
-                ax[0, 2].imshow(t_init_rot, cmap="gray")
-                ax[0, 2].set_title("Rotated Target")
-                ax[0, 3].imshow(tar_rot_shift, cmap="gray")
-                ax[0, 3].set_title("Shifted Rotated Target")
-                ax[1, 1].imshow(self.fmtcc_pre.r_init - t_init, cmap="gray")
-                ax[1, 1].set_title("Difference")
-                ax[1, 2].imshow(self.fmtcc_pre.r_init - t_init_rot, cmap="gray")
-                ax[1, 2].set_title("Difference")
-                ax[1, 3].imshow(self.fmtcc_pre.r_init - tar_rot_shift, cmap="gray")
-                ax[1, 3].set_title("Difference")
+                cc = signal.fftconvolve(
+                    self.fmtcc_pre.r_fmt, t_init_FMT[::-1], mode="same"
+                ).real
+                theta = (np.argmax(cc) - len(cc) / 2) * np.pi / len(cc)
+                # Apply the rotation
+                h = conversions.xyt2h_partial(np.array([[0, 0, -theta]]))[0]
+                ### t_init_rot = T_spline_init.warp(h).reshape(t_init.shape)
+                t_init_rot = warp.deform_image(t_init, h, self.PC)
+                # Do the translation search
+                cc = signal.fftconvolve(
+                    self.fmtcc_pre.r_init, t_init_rot[::-1, ::-1], mode="same"
+                ).real
+                shift = np.unravel_index(np.argmax(cc), cc.shape) - np.array(cc.shape) / 2
+                # Store the homography
+                measurement = np.array([[-shift[0], -shift[1], -theta]])
+                # Convert the measurements to homographies
+                if self.init_type == "full":
+                    p = conversions.xyt2h(measurement, self.PC)
+                else:
+                    p = conversions.xyt2h_partial(measurement)
+            # Run the optimization
+            num_iter = 0
+            while num_iter < max_iter:
+                # Warp the target subset
+                num_iter += 1
+                xi_prime = warp.get_xi_prime_vectorized_gpu(xi[0], p)  # BxHxWx2
+                T_deformed = gpu_warp.pull(T, xi_prime, bound_fn, spline_fn, extrapolate=1)
+                # Normalize the target
+                T_mean = T_deformed.mean(dim=(2, 3), keepdim=True)
+                T_deformed = (T_deformed - T_mean) / torch.sqrt(((T_deformed - T_mean) ** 2).sum(dim=(2, 3), keepdim=True))
+                # Compute the residuals
+                e = (r - T_deformed).reshape(len(idx), -1)  # BxH*W
+                # fig, ax = plt.subplots(1, 4, figsize=(15, 5))
+                # ax[0].imshow(np.squeeze(r.cpu().numpy()), cmap="gray")
+                # ax[0].set_title("Reference")
+                # ax[1].imshow(np.squeeze(T[-1].cpu().numpy())[self.subset_slice], cmap="gray")
+                # ax[1].set_title("Target")
+                # ax[2].imshow(np.squeeze(T_deformed[-1].cpu().numpy()), cmap="gray")
+                # ax[2].set_title("Deformed Target")
+                # ax[3].imshow(np.abs(e[-1].cpu().numpy()).reshape(r.shape[2:]), cmap="gray")
+                # ax[3].set_title("Residuals")
+                # plt.tight_layout()
+                # plt.show()
+                residuals = torch.abs(e).mean(dim=1)  # Take residuals over the C, H, W dimensions, leave the batch dimension
+                # Compute the gradient of the correlation criterion
+                dC_IC_ZNSSD = 2 / r_zmsv * torch.matmul(e, NablaR_dot_Jac.T).reshape(len(idx), 8, 1)  # Bx8
+                dp = torch.cholesky_solve(-dC_IC_ZNSSD, L)[..., 0]  # Bx8
+                # Get the norms
+                norms = dp_norm_vectorized_gpu(dp, xi)  # B
+                # Update the parameters
+                Wp = warp.W_vectorized_gpu(p)  # Bx3x3
+                Wdp = warp.W_vectorized_gpu(dp)  # Bx3x3
+                Wpdp = torch.matmul(Wp, torch.linalg.inv(Wdp))  # Bx3x3
+                p = ((Wpdp / Wpdp[:, -1:, -1:]) - torch.eye(3)[None, ...])  # Bx3x3
+                p = p.reshape(-1, 9)[:, :8]  # Bx8
+                # n = " ".join([f"{n:.1e}" for n in norms.cpu().numpy()])
+                # print(f"Batch {num_iter} - Norms: " + n)
+                # Check for convergence
+                if norms.max() < conv_tol:
+                    break
+            for i in range(len(norms)):
+                t = np.squeeze(T[i].cpu().numpy())[self.subset_slice]
+                t = (t - t.mean()) / np.sqrt(((t - t.mean()) ** 2).sum())
+                t_d = np.squeeze(T_deformed[i].cpu().numpy())
+                fig, ax = plt.subplots(1, 4, figsize=(15, 5))
+                ax[0].imshow(np.squeeze(r.cpu().numpy()), cmap="gray")
+                ax[0].set_title("Reference")
+                ax[0].axis("off")
+                ax[1].imshow(t_d, cmap="gray")
+                ax[1].set_title("Deformed Target")
+                ax[1].axis("off")
+                ax[2].imshow(np.abs(e[i].cpu().numpy()).reshape(r.shape[2:]), cmap="gray")
+                ax[2].set_title("Residuals")
+                ax[2].axis("off")
+                ax[3].imshow(np.abs(t - t_d), cmap="gray")
                 plt.tight_layout()
-                plt.savefig(f"gif/FMT-FCC_{idx}.png")
-                plt.close(fig)
-
-        return p, int(num_iter), float(residuals[-1]), float(norms[-1])
+                plt.savefig(f"./gif/{idx[i]}_GPU.png")
+                plt.close("all")
+            # print(f"Batch converged in {num_iter} iterations.")
+            # Store the results
+            residuals_out.append(residuals.cpu().numpy())
+            norms_out.append(norms.cpu().numpy())
+            num_iters_out.append(num_iter * np.ones_like(residuals.cpu().numpy()))
+            homographies_out.append(p.cpu().numpy())
+        # Store the results
+        self.results.homographies[self.roi] = np.concatenate(homographies_out, axis=0)
+        self.results.num_iter[self.roi] = np.concatenate(num_iters_out, axis=0)
+        self.results.residuals[self.roi] = np.concatenate(residuals_out, axis=0)
+        self.results.norms[self.roi] = np.concatenate(norms_out, axis=0)
 
     def save(self, filename: str) -> None:
         """Save the optimizer to a file."""
@@ -433,28 +381,16 @@ class ICGNOptimizer:
 # Functions for the inverse composition gauss-newton algorithm
 
 
-def dp_norm(dp, xi) -> float:
-    """Compute the norm of the deformation increment.
-    This is essentially a modified form of a homography magnitude.
-
-    Args:
-        dp (np.ndarray): The deformation increment. Shape is (8,).
-        xi (np.ndarray): The subset coordinates. Shape is (2, N).
-
-    Returns:
-        float: The norm of the deformation increment."""
-    xi1max = xi[0].max()
-    xi2max = xi[1].max()
-    ximax = np.array([xi1max, xi2max])
-    dp_i0 = dp[0:2] * ximax
-    dp_i1 = dp[3:5] * ximax
-    dp_i2 = dp[6:8] * ximax
-    out = np.sqrt(
-        (dp_i0**2).sum()
-        + (dp_i1**2).sum()
-        + (dp_i2**2).sum()
-        + (dp[2] ** 2 + dp[5] ** 2)
-    )
+def dp_norm_vectorized_gpu(dp, xi) -> float:
+    """Compute the norm of the delta p vector.
+    Assumes dp is a (B, 8) array and xi is a (*, 2) array."""
+    xi1max = xi[..., 0].max()
+    xi2max = xi[..., 1].max()
+    ximax = torch.tensor([[xi1max, xi2max]])  # Bx2
+    dp_i0 = torch.square(dp[:, 0:2] * ximax).sum(axis=-1)
+    dp_i1 = torch.square(dp[:, 3:5] * ximax).sum(axis=-1)
+    dp_i2 = torch.square(dp[:, 6:8] * ximax).sum(axis=-1)
+    out = torch.sqrt(dp_i0 + dp_i1 + dp_i2 + torch.square(dp[:, 2]) + torch.square(dp[:, 5]))
     return out
 
 
@@ -594,19 +530,6 @@ class Results:
         with open(filename, "rb") as f:
             obj = dill.load(f)
             self.__dict__.update(obj.__dict__)
-
-    def update(self, icgn_out: list, roi: np.ndarray) -> None:
-        """Update the results with the output of the homography optimization."""
-        # Get the results
-        p_roi = np.array([o[0] for o in icgn_out])
-        num_iter_roi = np.array([o[1] for o in icgn_out])
-        residuals_roi = np.array([o[2] for o in icgn_out])
-        norms_roi = np.array([o[3] for o in icgn_out])
-        # Store the results
-        self.homographies[roi] = p_roi
-        self.num_iter[roi] = num_iter_roi
-        self.residuals[roi] = residuals_roi
-        self.norms[roi] = norms_roi
 
     def calculate(self, roi: np.ndarray = None) -> None:
         """Calculate the strains, rotations, and stresses from the homographies."""

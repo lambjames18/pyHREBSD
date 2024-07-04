@@ -79,8 +79,8 @@ def reference_precompute(R, subset_slice, PC) -> tuple:
         np.ndarray: The subset's Hessian matrix.
         np.ndarray: The subset's coordinates."""
     # Get coordinates
-    x = np.arange(R.shape[1]) - PC[0]
-    y = np.arange(R.shape[0]) - PC[1]
+    x = np.arange(R.shape[1])# - PC[0]
+    y = np.arange(R.shape[0])# - PC[1]
     X, Y = np.meshgrid(x, y)
     xi = np.array([Y[subset_slice].flatten(), X[subset_slice].flatten()])
 
