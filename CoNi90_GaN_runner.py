@@ -1,91 +1,158 @@
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 
+import Data
 import utilities
-import get_homography
+import get_homography as gh_cpu
+import get_homography_gpu as gh_gpu
 
 if __name__ == "__main__":
     ############################
     # Load the pattern object
-    up2 = "E:/GaN/GaN_2048x2048.up2"
-    ang = "E:/GaN/GaN.ang"
-    name = "GaN"
+    up2 = "E:/GaN/GaN_20240425_27146_scan19_1024x1024.up2"
+    ang = "E:/GaN/GaN_20240425_27146_scan19.ang"
+    name = "GaN_20240425_27146_scan19"
     # Set the geometry parameters
     pixel_size = 13.0
     sample_tilt = 70.0  # The sample tilt in degrees
     detector_tilt = 10.1  # The detector tilt in degrees
-    subset_size = 1600
+    step_size = 0.02
+    subset_size = 819
+    fixed_projection = True
+    # Set the initial guess parameters
+    init_type = "none"  # The type of initial guess to use, "none", "full", or "partial"
     initial_guess_subset_size = 1024
     # Set the roi parameters
     start = (0, 0)  # The pixel location to start the ROI
-    span = (
-        200,
-        200,
-    )  # The (row, column) span of the ROI from the start location (down, right)
+    span = None  # The (row, column) span of the ROI from the start location (down, right)
     x0 = (100, 100)  # The location of the reference within the ROI
     # Set the image processing parameters
-    sigma = 20
-    equalize = True
-    truncate = True
+    high_pass_sigma = 101
+    low_pass_sigma = 2.5
+    truncate_std_scale = 3.0
     # Set the small strain flag
     small_strain = False
+    # Set the stiffness tensor
+    C = utilities.get_stiffness_tensor(365.0, 135.0, 114.0, 381.0, 109.0, structure="hexagonal")
+    traction_free = True
     # Calculate or read
     calc = True
+    # Whether to view the reference image
+    view_reference = False
     # Number of cores, max iterations, and convergence tolerance if calculating
     n_cores = 20
     max_iter = 100
     conv_tol = 1e-3
+    # Verbose
+    verbose = False
+    gpu = True
+    batch_size = 32
     ############################
     
-    # Load the pattern object
-    pat_obj, ang_data = utilities.get_scan_data(up2, ang)
-
-    # Create the optimizer
-    optimizer = get_homography.ICGNOptimizer(
-        pat_obj,
-        x0,
-        ang_data.pc,
-        sample_tilt,
-        detector_tilt,
-        ang_data.shape,
-        small_strain,
-    )
-    # Set the image processing parameters
-    optimizer.set_image_processing_kwargs(
-        sigma=sigma, equalize=equalize, truncate=truncate
-    )
-    # Set the region of interest
-    optimizer.set_roi(start=start, span=span)
-    # Set the homography subset
-    optimizer.set_homography_subset(subset_size, "image")
-    # Set the initial guess parameters
-    optimizer.set_initial_guess_params(
-        subset_size=initial_guess_subset_size, init_type="full"
-    )
-    if calc:
-        # Run the optimizer
-        optimizer.run(n_cores=n_cores, max_iter=max_iter, conv_tol=conv_tol, verbose=False)
-        optimizer.save_results(f"results/{name}.pkl")
+    if gpu:
+        name += "_gpu"
+        get_homography = gh_gpu
     else:
-        optimizer.load_results("results/CoNi90_DED_ICGN.pkl")
-    # Save the results
-    r = optimizer.results
-    m = optimizer.roi
+        # name += "_cpu"
+        get_homography = gh_cpu
 
+    # Load the pattern object
+    # pat_obj, ang_data = utilities.get_scan_data(up2, ang)
+    pat_obj = Data.UP2(up2)
+    ang_data = utilities.read_ang(ang, pat_obj.patshape, segment_grain_threshold=None)
+    # Rotate the stiffness tensor into the sample frame
+    if C is not None:
+        C = utilities.rotate_stiffness_to_sample_frame(C, ang_data.quats)
+        # C = np.ones(ang_data.shape + (6, 6), dtype=float) * C
+    # Correct PC
+    PC = np.array([ang_data.pc[0] - ang_data.shape[1] / 2, ang_data.pc[1] - ang_data.shape[0] / 2, ang_data.pc[2]])
+    if calc:
+        # Create the optimizer
+        optimizer = get_homography.ICGNOptimizer(
+            pat_obj=pat_obj,
+            x0=x0,
+            PC=PC,
+            sample_tilt=sample_tilt,
+            detector_tilt=detector_tilt,
+            pixel_size=pixel_size,
+            step_size=step_size,
+            scan_shape=ang_data.shape,
+            small_strain=small_strain,
+            C=C,
+            fixed_projection=fixed_projection,
+            traction_free=traction_free,
+        )
+        
+        # Set the image processing parameters
+        optimizer.set_image_processing_kwargs(
+            low_pass_sigma=low_pass_sigma,
+            high_pass_sigma=high_pass_sigma,
+            truncate_std_scale=truncate_std_scale
+            
+        )
+        # Set the region of interest
+        optimizer.set_roi(start=start, span=span)
+        # Set the homography subset
+        optimizer.set_homography_subset(subset_size, "image")
+        # Set the initial guess parameters
+        optimizer.set_initial_guess_params(
+            subset_size=initial_guess_subset_size, init_type=init_type
+        )
+        if view_reference:
+            optimizer.view_reference()
+            time.sleep(1)
+
+        # Run the optimizer
+        if gpu:
+            optimizer.run(
+                batch_size=batch_size, max_iter=max_iter, conv_tol=conv_tol
+            )
+        else:
+            # optimizer.extra_verbose = True
+            optimizer.run(
+                n_cores=n_cores, max_iter=max_iter, conv_tol=conv_tol, verbose=verbose
+            )
+        results = optimizer.results
+        results.save(f"results/{name}_results.pkl")
+        results.calculate()
+        results.save(f"results/{name}_results.pkl")
+    else:
+        results = get_homography.Results(
+            ang_data.shape,
+            PC,
+            x0,
+            step_size / pixel_size,
+            fixed_projection,
+            detector_tilt,
+            sample_tilt,
+            traction_free,
+            small_strain,
+            C,
+        )
+        results.load(f"results/{name}_results.pkl")
+        results.shape = ang_data.shape
+        results.C = C
+        results.PC_array = np.ones(ang_data.shape + (3,), dtype=float) * PC
+        results.traction_free = traction_free
+        results.small_strain = small_strain
+        results.calculate()
+
+    m = results.num_iter > 0
     # Generate maps
-    utilities.view_tensor_images(r.F[m].reshape(span + (3, 3)), "jet", "deformation", (x0[0] - start[0], x0[1] - start[1]), "results", name)
-    utilities.view_tensor_images(r.e[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
-    utilities.view_tensor_images(r.w[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
-    utilities.view_tensor_images(r.homographies[m].reshape(span + (8,)), "jet", "homography", (x0[0] - start[0], x0[1] - start[1]), "results", name)
+    utilities.view_tensor_images(results.F[m].reshape(span + (3, 3)), "jet", "deformation", (x0[0] - start[0], x0[1] - start[1]), "results", name)
+    utilities.view_tensor_images(results.strains[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
+    utilities.view_tensor_images(results.rotations[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
+    utilities.view_tensor_images(results.homographies[m].reshape(span + (8,)), "jet", "homography", (x0[0] - start[0], x0[1] - start[1]), "results", name)
     plt.close("all")
 
     # Save the ICGN optimization results (for logging/debugging purposes)
     fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-    im0 = ax[0].imshow(r.num_iter[m].reshape(span), cmap="viridis")
+    im0 = ax[0].imshow(results.num_iter[m].reshape(span), cmap="viridis")
     ax[0].set_title("Iteration count")
-    im1 = ax[1].imshow(r.residuals[m].reshape(span), cmap="viridis")
+    im1 = ax[1].imshow(results.residuals[m].reshape(span), cmap="viridis")
     ax[1].set_title("Residuals")
-    im2 = ax[2].imshow(r.norms[m].reshape(span), cmap="viridis")
+    im2 = ax[2].imshow(results.norms[m].reshape(span), cmap="viridis")
     ax[2].set_title("Norms")
     plt.subplots_adjust(wspace=0.5, left=0.1, right=0.9, top=0.99, bottom=0.01)
     l = ax[0].get_position()

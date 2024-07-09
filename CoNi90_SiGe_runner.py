@@ -2,12 +2,10 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 
-import rotations
 import Data
 import utilities
 import get_homography as gh_cpu
 import get_homography_gpu as gh_gpu
-import conversions
 
 if __name__ == "__main__":
     ############################
