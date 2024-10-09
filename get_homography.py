@@ -20,27 +20,6 @@ NUMBER = int | float
 NUM_PHYSICAL_CORES = int(mpire.cpu_count() // 2)
 
 # Create some namedtuples
-ReferencePrecompute = namedtuple(
-    "ReferencePrecompute",
-    [
-        "r",
-        "r_zmsv",
-        "NablaR_dot_Jac",
-        "c",
-        "L",
-        "xi",
-        "x",
-        "y",
-        "r_init",
-        "r_fft",
-        "r_fmt",
-        "x_fmt",
-        "y_fmt",
-        "X_fmt",
-        "Y_fmt",
-    ],
-)
-
 ICGN_Pre = namedtuple("ICGN_Pre", ["r", "r_zmsv", "NablaR_dot_Jac", "c", "L", "xi", "x", "y"])
 FMTCC_Pre = namedtuple("FMTCC_Pre", ["r_init", "r_fft", "r_fmt", "x_fmt", "y_fmt", "X_fmt", "Y_fmt"])
 
@@ -177,8 +156,7 @@ class ICGNOptimizer:
         )
 
     def view_reference(self) -> None:
-        R = utilities.get_pattern(self.pat_obj, self.x0)
-        R = utilities.process_pattern(R, **self.image_processing_kwargs)
+        R = self.pat_obj.read_pattern(self.x0, process=True, p_kwargs=self.image_processing_kwargs)
         fig, ax = plt.subplots(1, 1, figsize=(5, 5))
         ax.imshow(R, cmap="gray")
         ax.axis("off")
@@ -197,19 +175,15 @@ class ICGNOptimizer:
     def reference_precompute(self) -> None:
         """Precompute arrays/values for the reference subset for the IC-GN algorithm."""
         # Get the reference image and process it
-        # self.R = utilities.get_pattern(self.pat_obj, self.x0)
-        # self.R = utilities.process_pattern(self.R, **self.image_processing_kwargs)
         self.R = self.pat_obj.read_pattern(self.x0, process=True, p_kwargs=self.image_processing_kwargs)
-        # Get the IC-GN sub-pixel alignment precomuted items
+
         # Get coordinates
         x = np.arange(self.R.shape[1]) - self.h0[0]
         y = np.arange(self.R.shape[0]) - self.h0[1]
-        X, Y = np.meshgrid(x, y)
+        X, Y = np.meshgrid(x, y, indexing="xy")
         xi = np.array([Y[self.subset_slice].flatten(), X[self.subset_slice].flatten()])
+
         # Compute the intensity gradients of the subset
-        # spline = warp.Spline(self.R, 5, 5, self.h0, self.subset_slice)
-        # GR = spline.gradient()
-        # r = spline(xi[0], xi[1], grid=False, normalize=False).flatten()
         spline = interpolate.RectBivariateSpline(x, y, self.R, kx=5, ky=5)
         GRx = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
         GRy = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
@@ -217,18 +191,26 @@ class ICGNOptimizer:
         r = spline(xi[0], xi[1], grid=False).flatten()
         r_zmsv = np.sqrt(((r - r.mean()) ** 2).sum())
         r = (r - r.mean()) / r_zmsv
+
         # Compute the jacobian of the shape function
         _1 = np.ones(xi.shape[1])
         _0 = np.zeros(xi.shape[1])
         out0 = np.array([[xi[0], xi[1], _1, _0, _0, _0, -xi[0] ** 2, -xi[1] * xi[0]]])
         out1 = np.array([[_0, _0, _0, xi[0], xi[1], _1, -xi[0] * xi[1], -xi[1] ** 2]])
         Jac = np.vstack((out0, out1))  # 2x8xN
+
         # Multiply the gradients by the jacobian
-        NablaR_dot_Jac = np.einsum("ilk,ljk->ijk", GR, Jac)[0]  # 1x8xN
-        # Compute the Hessian
+        NablaR_dot_Jac = np.einsum("ilk,ljk->ijk", GR, Jac)[0]  # 1x8xN -> 8xN
         H = 2 / r_zmsv**2 * NablaR_dot_Jac.dot(NablaR_dot_Jac.T)
+
+        # Compute the Cholesky decomposition
         (c, L) = linalg.cho_factor(H)
+
+        # Store the precomputed values
+        del GR, GRx, GRy, Jac, H, X, Y, spline
         self.icgn_pre = ICGN_Pre(r, r_zmsv, NablaR_dot_Jac, c, L, xi, x, y)
+
+        # Precompute the FMT-FCC initial guess
         if self.init_type is not None and self.init_type != "none":
             # Get the FMT-FCC initial guess precomputed items
             r_init = window_and_normalize(self.R[self.guess_subset_slice])
@@ -264,7 +246,7 @@ class ICGNOptimizer:
         # Run the optimization
         print("Running the homography optimization...")
         if n_cores > 1:
-            with mpire.WorkerPool(n_jobs=n_cores, use_dill=True) as pool:
+            with mpire.WorkerPool(n_jobs=n_cores, use_dill=True, start_method="spawn") as pool:
                 out = pool.map(self.run_single, [i for i in indices], progress_bar=True, iterable_len=self.num_points)
         else:
             out = [self.run_single(idx) for idx in tqdm(indices)]
@@ -274,12 +256,9 @@ class ICGNOptimizer:
     def run_single(self, idx: int) -> np.ndarray:
         """Run the homography optimization for a single point."""
         # Get the target image and process it
-        # T = utilities.get_pattern(self.pat_obj, idx)
-        # T = utilities.process_pattern(T, **self.image_processing_kwargs)
         T = self.pat_obj.read_pattern(idx, process=True, p_kwargs=self.image_processing_kwargs)
         T_spline = interpolate.RectBivariateSpline(
             self.icgn_pre.x, self.icgn_pre.y, T, kx=5, ky=5
-            # self.precomputed.x, self.precomputed.y, normalize(T), kx=5, ky=5
         )
         ### T_spline = warp.Spline(T, 5, 5, self.h0, self.subset_slice)
         # Run initial guess
@@ -354,22 +333,22 @@ class ICGNOptimizer:
             # print(f"Pattern {idx}: Iteration {num_iter}, Norm: {norm:.4f}, Residual: {residuals[-1]:.4f}")
             if norm < self.conv_tol:
                 break
-        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
-        ax[0].imshow(self.icgn_pre.r.reshape(818, 818), cmap="gray")
-        ax[0].set_title("Reference")
-        ax[0].axis("off")
-        ax[1].imshow(t_deformed.reshape(818, 818), cmap="gray")
-        ax[1].set_title("Deformed Target")
-        ax[1].axis("off")
-        ax[2].imshow(np.abs(e).reshape(818, 818), cmap="gray")
-        ax[2].set_title("Residuals")
-        ax[2].axis("off")
-        plt.tight_layout()
-        plt.savefig(f"./gif/{idx}_CPU.png")
-        plt.close("all")
-        
         if self.verbose:
-        # if num_iter >= self.max_iter and self.verbose:
+            fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+            ax[0].imshow(self.icgn_pre.r.reshape(self.scan_shape), cmap="gray")
+            ax[0].set_title("Reference")
+            ax[0].axis("off")
+            ax[1].imshow(t_deformed.reshape(self.scan_shape), cmap="gray")
+            ax[1].set_title("Deformed Target")
+            ax[1].axis("off")
+            ax[2].imshow(np.abs(e).reshape(self.scan_shape), cmap="gray")
+            ax[2].set_title("Residuals")
+            ax[2].axis("off")
+            plt.tight_layout()
+            plt.savefig(f"./gif/{idx}_CPU.png")
+            plt.close("all")
+        
+        if num_iter >= self.max_iter and self.verbose:
             # print(f"Warning: Maximum number of iterations reached for pattern {idx}!")
             row = int(self.icgn_pre.xi[0].max() - self.icgn_pre.xi[0].min() + 1)
             col = int(self.icgn_pre.xi[1].max() - self.icgn_pre.xi[1].min() + 1)

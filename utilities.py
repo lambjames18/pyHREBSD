@@ -729,7 +729,7 @@ def view_tensor_images(
         plt.savefig(
             os.path.join(save_dir, f"{save_name}{tensor_type}.png"),
             dpi=300,
-            transparent=True,
+            # transparent=True,
         )
         plt.close(fig)
     plt.show()
