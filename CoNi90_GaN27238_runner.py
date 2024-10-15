@@ -39,7 +39,7 @@ if __name__ == "__main__":
     C = utilities.get_stiffness_tensor(365.0, 135.0, 114.0, 381.0, 109.0, structure="hexagonal")
     traction_free = True
     # Calculate or read
-    calc = True
+    calc = False
     # Whether to view the reference image
     view_reference = True
     # Max iterations, and convergence tolerance if calculating
@@ -131,7 +131,7 @@ if __name__ == "__main__":
         results.calculate()
         results.save(f"results/{name}_results.pkl")
     else:
-        results = get_homography.Results(
+        results = utilities.Results(
             ang_data.shape,
             PC,
             x0,
@@ -193,7 +193,7 @@ if __name__ == "__main__":
     theta[mask] *= -1
     fig, ax = plt.subplots(1, 1, figsize=(4, 4))
     im = ax.imshow(theta[m].reshape(span), cmap="viridis")
-    plt.subplots_adjust(left=0.1, right=0.9, top=0.99, bottom=0.01)
+    plt.subplots_adjust(left=0.1, right=0.85, top=0.99, bottom=0.01)
     l = ax.get_position()
     cax = fig.add_axes([l.x1 + 0.01, l.y0, 0.02, l.height])
     plt.colorbar(im, cax=cax)

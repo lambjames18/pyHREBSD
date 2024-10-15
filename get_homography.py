@@ -68,7 +68,7 @@ class ICGNOptimizer:
         self.extra_verbose = False
 
         # Run the initialization functions
-        self.results = Results(
+        self.results = utilities.Results(
             scan_shape, PC, x0,
             step_size / pixel_size,
             fixed_projection,
@@ -509,93 +509,3 @@ def FMT(image, X, Y, x, y):
     image_polar = np.abs(spline(x, y, grid=False).reshape(image.shape))
     sig = window_and_normalize(image_polar.mean(axis=1))
     return sig, image_polar
-
-
-class Results:
-    def __init__(self,
-                 shape: tuple = None,
-                 PC: ARRAY = None,
-                 x0: ARRAY = None,
-                 rel_step_size: NUMBER = None,
-                 fixed_projection: bool = False,
-                 detector_tilt: NUMBER = 10.0,
-                 sample_tilt: NUMBER = 70.0,
-                 traction_free: bool = True,
-                 small_strain: bool = True,
-                 C: ARRAY = None,
-                 ):
-        # Create scan details
-        self.shape = shape
-        self.yi, self.xi = np.indices(self.shape).astype(float)
-
-        # Create xtal 2 sample transformation matrix
-        x2s = np.array([180.0, 90 + sample_tilt - detector_tilt, 90.0], dtype=float)
-        self.x2s = rotations.eu2om(np.deg2rad(x2s)).T
-
-        # Create projection geometry
-        if fixed_projection:
-            self.PC_array = np.ones(shape + (3,), dtype=float) * PC
-        elif rel_step_size is None or x0 is None:
-            raise ValueError("The relative step size and the reference pattern location must be provided if the projection is not fixed.")
-        else:
-            theta = np.radians(90 - sample_tilt)
-            phi = np.radians(detector_tilt)
-            self.PC_array = np.array([
-                PC[0] - (x0[1] - self.xi) * rel_step_size,
-                PC[1] - (x0[0] - self.yi) * rel_step_size * np.cos(theta) / np.cos(phi),
-                PC[2] - (x0[0] - self.yi) * rel_step_size * np.sin(theta + phi)
-            ]).transpose(1, 2, 0)
-
-        # Create calculation parameters
-        if traction_free and C is None:
-            raise ValueError("The stiffness tensor must be provided if the calculation is traction free.")
-        self.traction_free = traction_free
-        self.C = C
-        self.small_strain = small_strain
-
-        # Create empty arrays for the results
-        self.num_iter = np.zeros(shape, dtype=int)
-        self.residuals = np.zeros(shape, dtype=float)
-        self.norms = np.zeros(shape, dtype=float)
-        self.homographies = np.zeros(shape + (8,), dtype=float)
-        self.strains = np.zeros(shape + (3, 3), dtype=float)
-        self.rotations = np.zeros(shape + (3, 3), dtype=float)
-        self.stresses = np.zeros(shape + (3, 3), dtype=float)
-        self.F = np.zeros(shape + (3, 3), dtype=float)
-
-    def save(self, filename: str) -> None:
-        """Save the results to a file."""
-        with open(filename, "wb") as f:
-            dill.dump(self, f)
-
-    def load(self, filename: str) -> None:
-        """Load the results from a file."""
-        with open(filename, "rb") as f:
-            obj = dill.load(f)
-            self.__dict__.update(obj.__dict__)
-
-    def update(self, icgn_out: list, roi: np.ndarray) -> None:
-        """Update the results with the output of the homography optimization."""
-        # Get the results
-        p_roi = np.array([o[0] for o in icgn_out])
-        num_iter_roi = np.array([o[1] for o in icgn_out])
-        residuals_roi = np.array([o[2] for o in icgn_out])
-        norms_roi = np.array([o[3] for o in icgn_out])
-        # Store the results
-        self.homographies[roi] = p_roi
-        self.num_iter[roi] = num_iter_roi
-        self.residuals[roi] = residuals_roi
-        self.norms[roi] = norms_roi
-
-    def calculate(self, roi: np.ndarray = None) -> None:
-        """Calculate the strains, rotations, and stresses from the homographies."""
-        if roi is None:
-            roi = np.s_[:]
-        F_roi = conversions.h2F(self.homographies[roi], self.PC_array[roi])
-        F_roi = np.matmul(self.x2s, np.matmul(F_roi, self.x2s.T))
-        F_roi = F_roi / F_roi[..., 2, 2][..., None, None]
-        self.F[roi] = F_roi
-        calc_out = conversions.F2strain(self.F[roi], self.C, self.small_strain)
-        self.strains[roi], self.rotations[roi] = calc_out[:2]
-        if self.traction_free:
-            self.stresses[roi] = calc_out[2]
