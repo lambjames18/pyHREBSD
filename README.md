@@ -3,13 +3,13 @@ HREBSD implementation in python mirrored after EMSoft in the SEM/EMHREBSD.f90 fi
 
 ### Conda Env (windows, cuda version = 12.4)
 ```
-conda create -n hrebsd python=3.12 numpy matplotlib tqdm scipy scikit-image pytorch pytorch-cuda=12.4 -c pytorch -c nvidia -c conda-forge
+conda create -n hrebsd python=3.12 numpy matplotlib tqdm scipy scikit-image pytorch kornia pytorch-cuda=12.4 -c pytorch -c nvidia -c conda-forge
 conda activate hrebsd
 pip install mpire[dill]
 ```
 ### Conda Env (Mac or no CUDA)
 ```
-conda create -n hrebsd python=3.12 numpy matplotlib tqdm scipy scikit-image pytorch -c pytorch -c conda-forge
+conda create -n hrebsd python=3.12 numpy matplotlib tqdm scipy scikit-image pytorch kornia -c pytorch -c conda-forge
 conda activate hrebsd
 pip install mpire[dill]
 ```
