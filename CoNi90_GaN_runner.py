@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 import Data
 import utilities
-import get_homography as gh_cpu
+import get_homography_cpu as gh_cpu
 import get_homography_gpu as gh_gpu
 
 if __name__ == "__main__":

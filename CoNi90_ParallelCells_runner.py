@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import utilities
-import get_homography
+import get_homography_cpu
 
 if __name__ == "__main__":
     ############################
@@ -52,7 +52,7 @@ if __name__ == "__main__":
     plt.show()
 
     # Create the optimizer
-    optimizer = get_homography.ICGNOptimizer(
+    optimizer = get_homography_cpu.ICGNOptimizer(
         pat_obj,
         x0,
         ang_data.pc,

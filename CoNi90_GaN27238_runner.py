@@ -13,24 +13,24 @@ if __name__ == "__main__":
     ############################
     # Load the pattern object
     name = "GaN27238"
-    up2 = "/Users/jameslamb/Documents/research/data/GaN-DED/20240508_27238_512x512_flipX.up2"
-    ang = "/Users/jameslamb/Documents/research/data/GaN-DED/20240508_27238_flipX.ang"
+    up2 = "D:/Jlamb/GaN_27238scan/20240508_27238_1024x1024_flipX.up2"
+    ang = "D:/Jlamb/GaN_27238scan/20240508_27238_flipX.ang"
     # Set the geometry parameters
     pixel_size = 26.0  # The pixel size in um, taking binning into account (so 4xpixel_size for 4x4 binning)
     sample_tilt = 70.0  # The sample tilt in degrees
     detector_tilt = 8.5  # The detector tilt in degrees
     step_size = 0.02  # The step size in um
-    subset_size = 480
+    subset_size = 819
     fixed_projection = False
     # Set the initial guess parameters
     init_type = "none"  # The type of initial guess to use, "none", "full", or "partial"
-    initial_guess_subset_size = 512
+    initial_guess_subset_size = 1024
     # Set the roi parameters
     start = (0, 0)  # The pixel location to start the ROI
     span = None  # None is the full scan
     x0 = (100, 100)  # The location of the reference within the ROI
     # Set the image processing parameters
-    high_pass_sigma = 75
+    high_pass_sigma = 101
     low_pass_sigma = 2.5
     truncate_std_scale = 3.0
     # Set the small strain flag
@@ -41,14 +41,14 @@ if __name__ == "__main__":
     # Calculate or read
     calc = False
     # Whether to view the reference image
-    view_reference = True
+    view_reference = False
     # Max iterations, and convergence tolerance if calculating
     max_iter = 50
     conv_tol = 1e-3
     # Verbose
     verbose = False
     # If using the GPU, set the batch size, if CPU, set the number of cores
-    gpu = False
+    gpu = True
     batch_size = 64
     n_cores = int(os.cpu_count() * 0.75)
     print(f"Using {n_cores} cores")
@@ -56,10 +56,10 @@ if __name__ == "__main__":
 
     if gpu:
         name += "_gpu"
-        import get_homography_gpu as get_homography
+        import get_homography_gpu as get_homography_cpu
     else:
         # name += "_cpu"
-        import get_homography as get_homography
+        import get_homography_cpu as get_homography_cpu
 
     # Load the pattern object
     # pat_obj, ang_data = utilities.get_scan_data(up2, ang)
@@ -80,7 +80,7 @@ if __name__ == "__main__":
     PC = np.array([ang_data.pc[0] - ang_data.shape[1] / 2, ang_data.pc[1] - ang_data.shape[0] / 2, ang_data.pc[2]])
     if calc:
         # Create the optimizer
-        optimizer = get_homography.ICGNOptimizer(
+        optimizer = get_homography_cpu.ICGNOptimizer(
             pat_obj=pat_obj,
             x0=x0,
             PC=PC,
@@ -153,10 +153,10 @@ if __name__ == "__main__":
 
     m = results.num_iter > 0
     # Generate maps
-    utilities.view_tensor_images(results.F[m].reshape(span + (3, 3)), "jet", "deformation", (x0[0] - start[0], x0[1] - start[1]), "results", name)
-    utilities.view_tensor_images(results.strains[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
-    utilities.view_tensor_images(results.rotations[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
-    utilities.view_tensor_images(results.homographies[m].reshape(span + (8,)), "jet", "homography", (x0[0] - start[0], x0[1] - start[1]), "results", name)
+    utilities.view_tensor_images(results.F[m].reshape(span + (3, 3)), "deformation", (x0[0] - start[0], x0[1] - start[1]), "results", name)
+    utilities.view_tensor_images(results.strains[m].reshape(span + (3, 3)), "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
+    utilities.view_tensor_images(results.rotations[m].reshape(span + (3, 3)), "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
+    utilities.view_tensor_images(results.homographies[m].reshape(span + (8,)), "homography", (x0[0] - start[0], x0[1] - start[1]), "results", name)
     plt.close("all")
 
     # Save the ICGN optimization results (for logging/debugging purposes)

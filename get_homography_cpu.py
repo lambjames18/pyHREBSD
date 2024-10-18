@@ -156,10 +156,15 @@ class ICGNOptimizer:
         )
 
     def view_reference(self) -> None:
-        R = self.pat_obj.read_pattern(self.x0, process=True, p_kwargs=self.image_processing_kwargs)
-        fig, ax = plt.subplots(1, 1, figsize=(5, 5))
-        ax.imshow(R, cmap="gray")
-        ax.axis("off")
+        R0 = self.pat_obj.read_pattern(self.x0, process=False)
+        R1 = self.pat_obj.read_pattern(self.x0, process=True, p_kwargs=self.image_processing_kwargs)
+        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+        ax[0].imshow(R0, cmap="gray")
+        ax[0].set_title("Raw Reference")
+        ax[0].axis("off")
+        ax[1].imshow(R1, cmap="gray")
+        ax[1].set_title("Processed Reference")
+        ax[1].axis("off")
         plt.show()
 
     def rc2idx(self, row: NUMBER, col: NUMBER) -> NUMBER:

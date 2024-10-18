@@ -1004,6 +1004,7 @@ class Results:
             roi = np.s_[:]
         for i in range(8):
             print(i, self.homographies[..., i].min(), self.homographies[..., i].mean(), self.homographies[..., i].max())
+        # self.homographies[np.abs(self.homographies) < 1e-5] = 0.0
         if not free_to_dilate:
             self.homographies[..., 0] = 0.0
             self.homographies[..., 4] = 0.0
