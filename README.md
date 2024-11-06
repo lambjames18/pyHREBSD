@@ -17,8 +17,8 @@ conda activate hrebsd
 pip install mpire[dill]
 ```
 ### File descripitions
-- `get_homography_cpu.py`: Contains the code for running the inverse compositional Gauss–Newton (IC-GN) algorithm for determining the homographies that warp target patterns to a reference pattern.
-- `get_homography_gpu.py`: Same thing but for the GPU. Note that the GPU version currently does not support creating an initial guess of the homography.
+- `get_homography_cpu.py`: Contains the code for running the inverse compositional Gauss–Newton (IC-GN) algorithm for determining the homographies that warp target patterns to a reference pattern. Inside this file, the method `run_single` of the `ICGNOptimizer` class contains the actual algorithm useed to determine the homographies.
+- `get_homography_gpu.py`: Same thing but for the GPU. Note that the GPU version currently does not support creating an initial guess of the homography. Inside this file, the method `run` of the `ICGNOptimizer` class contains the actual algorithm useed to determine the homographies.
 - `bspline_gpu.py`: Contains all of the core GPU functions that are used during the IC-GN algorithm on the GPU.
 - `warp.py`: Contains helper functions for image warping, coordinate warping, homography shape functions, and a custom Spline class. Functions for the CPU and GPU are contained here.
 - `Data.py`: Contains a simgple UP2 class for reading up2 files and processing the EBSPs contained within.
