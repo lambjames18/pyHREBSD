@@ -190,9 +190,9 @@ class ICGNOptimizer:
 
         # Compute the intensity gradients of the subset
         spline = interpolate.RectBivariateSpline(x, y, self.R, kx=5, ky=5)
-        GRx = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
-        GRy = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
-        GR = np.vstack((GRx, GRy)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
+        GRx = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
+        GRy = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
+        GR = np.vstack((GRy, GRx)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
         r = spline(xi[0], xi[1], grid=False).flatten()
         r_zmsv = np.sqrt(((r - r.mean()) ** 2).sum())
         r = (r - r.mean()) / r_zmsv
@@ -329,6 +329,8 @@ class ICGNOptimizer:
             )[:, 0]
             # Update the parameters
             norm = dp_norm(dp, self.icgn_pre.xi)
+            print(norm)
+            exit()
             Wp = warp.W(p)
             Wdp = warp.W(dp)
             Wpdp = np.matmul(Wp, np.linalg.inv(Wdp))

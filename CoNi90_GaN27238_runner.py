@@ -13,18 +13,18 @@ if __name__ == "__main__":
     ############################
     # Load the pattern object
     name = "GaN27238"
-    up2 = "D:/Jlamb/GaN_27238scan/20240508_27238_1024x1024_flipX.up2"
-    ang = "D:/Jlamb/GaN_27238scan/20240508_27238_flipX.ang"
+    up2 = "/Users/jameslamb/Documents/research/data/GaN-DED/20240508_27238_256x256_flipX.up2"
+    ang = "/Users/jameslamb/Documents/research/data/GaN-DED/20240508_27238_flipX.ang"
     # Set the geometry parameters
     pixel_size = 26.0  # The pixel size in um, taking binning into account (so 4xpixel_size for 4x4 binning)
     sample_tilt = 70.0  # The sample tilt in degrees
     detector_tilt = 8.5  # The detector tilt in degrees
     step_size = 0.02  # The step size in um
-    subset_size = 819
+    subset_size = 200
     fixed_projection = False
     # Set the initial guess parameters
     init_type = "none"  # The type of initial guess to use, "none", "full", or "partial"
-    initial_guess_subset_size = 1024
+    initial_guess_subset_size = 256
     # Set the roi parameters
     start = (0, 0)  # The pixel location to start the ROI
     span = None  # None is the full scan
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     C = utilities.get_stiffness_tensor(365.0, 135.0, 114.0, 381.0, 109.0, structure="hexagonal")
     traction_free = True
     # Calculate or read
-    calc = False
+    calc = True
     # Whether to view the reference image
     view_reference = False
     # Max iterations, and convergence tolerance if calculating
@@ -48,9 +48,9 @@ if __name__ == "__main__":
     # Verbose
     verbose = False
     # If using the GPU, set the batch size, if CPU, set the number of cores
-    gpu = True
+    gpu = False
     batch_size = 64
-    n_cores = int(os.cpu_count() * 0.75)
+    n_cores = 1 #int(os.cpu_count() * 0.75)
     print(f"Using {n_cores} cores")
     ############################
 
