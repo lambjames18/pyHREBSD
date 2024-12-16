@@ -12,16 +12,17 @@ import utilities
 if __name__ == "__main__":
     ############################
     # Load the pattern object
-    name = "GaN27238"
-    up2 = "/Users/jameslamb/Documents/research/data/GaN-DED/20240508_27238_256x256_flipX.up2"
+    name = "GaN27238_512"
+    # up2 = "/Users/jameslamb/Documents/research/data/GaN-DED/20240508_27238_256x256_flipX.up2"
+    up2 = "/Users/jameslamb/Documents/research/data/GaN-DED/20240508_27238_512x512_flipX.up2"
     ang = "/Users/jameslamb/Documents/research/data/GaN-DED/20240508_27238_flipX.ang"
     # Set the geometry parameters
     pixel_size = 26.0  # The pixel size in um, taking binning into account (so 4xpixel_size for 4x4 binning)
     sample_tilt = 70.0  # The sample tilt in degrees
     detector_tilt = 8.5  # The detector tilt in degrees
     step_size = 0.02  # The step size in um
-    subset_size = 200
-    fixed_projection = False
+    subset_size = 480
+    fixed_projection = True
     # Set the initial guess parameters
     init_type = "none"  # The type of initial guess to use, "none", "full", or "partial"
     initial_guess_subset_size = 256
@@ -50,7 +51,7 @@ if __name__ == "__main__":
     # If using the GPU, set the batch size, if CPU, set the number of cores
     gpu = False
     batch_size = 64
-    n_cores = 1 #int(os.cpu_count() * 0.75)
+    n_cores = int(os.cpu_count() * 0.75)
     print(f"Using {n_cores} cores")
     ############################
 
@@ -114,10 +115,6 @@ if __name__ == "__main__":
             time.sleep(1)
 
         # Run the optimizer
-        # optimizer.extra_verbose = True
-        # optimizer.run(
-        #     n_cores=n_cores, max_iter=max_iter, conv_tol=conv_tol, verbose=verbose
-        # )
         if gpu:
             optimizer.run(
                 batch_size=batch_size, max_iter=max_iter, conv_tol=conv_tol, verbose=verbose
@@ -149,14 +146,28 @@ if __name__ == "__main__":
         results.PC_array = np.ones(ang_data.shape + (3,), dtype=float) * PC
         results.traction_free = traction_free
         results.small_strain = small_strain
-        results.calculate(free_to_dilate=False)
+        results.calculate()
 
     m = results.num_iter > 0
     # Generate maps
-    utilities.view_tensor_images(results.F[m].reshape(span + (3, 3)), "deformation", (x0[0] - start[0], x0[1] - start[1]), "results", name)
-    utilities.view_tensor_images(results.strains[m].reshape(span + (3, 3)), "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
-    utilities.view_tensor_images(results.rotations[m].reshape(span + (3, 3)), "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
-    utilities.view_tensor_images(results.homographies[m].reshape(span + (8,)), "homography", (x0[0] - start[0], x0[1] - start[1]), "results", name)
+    ref_pos = (x0[0] - start[0], x0[1] - start[1])
+
+    fig, ax = plt.subplots(3, 3, figsize=(8, 8))
+    ax = ax.ravel()
+    h = results.homographies[m].reshape(span + (8,))
+    for i in range(8):
+        im = ax[i].imshow(h[..., i], cmap="Greys_r")
+        ax[i].scatter(ref_pos[1], ref_pos[0], c="r", s=10, marker="x")
+        ax[i].axis("off")
+    ax[-1].axis("off")
+    plt.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0, wspace=0.0, hspace=0.0)
+    plt.savefig(f"results/{name}_homography.png")
+    exit()
+
+    utilities.view_tensor_images(results.F[m].reshape(span + (3, 3)), "deformation", ref_pos, "results", name)
+    utilities.view_tensor_images(results.strains[m].reshape(span + (3, 3)), "strain", ref_pos, "results", name, "upper")
+    utilities.view_tensor_images(results.rotations[m].reshape(span + (3, 3)), "strain", ref_pos, "results", name, "upper")
+    utilities.view_tensor_images(results.homographies[m].reshape(span + (8,)), "homography", ref_pos, "results", name, clip="local")
     plt.close("all")
 
     # Save the ICGN optimization results (for logging/debugging purposes)

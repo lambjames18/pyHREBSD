@@ -657,13 +657,13 @@ def view(*imgs, cmap="gray", titles=None, save_dir=None):
 
 def view_tensor_images(
     e,
-    cmap="jet",
     tensor_type="strain",
     xy=None,
     save_dir=None,
     save_name="",
     show="all",
     clip="local",
+    cmap="Greys_r",
 ):
     """View individual tensor components of a grid of tensors (such as the strain tensor from HREBSD).
 
@@ -716,8 +716,8 @@ def view_tensor_images(
                     ax[i, j].axis("off")
                     continue
             if clip == "local":
-                vmin = np.percentile(e[..., i, j], 0.1)
-                vmax = np.percentile(e[..., i, j], 99.9)
+                vmin = e[..., i, j].min()  #np.percentile(e[..., i, j], 0.1)
+                vmax = e[..., i, j].max()  #np.percentile(e[..., i, j], 99.9)
             if tensor_type == "homography":
                 _0 = ax[i, j].imshow(e[..., 3 * i + j], cmap=cmap, vmin=vmin, vmax=vmax)
             else:
@@ -998,16 +998,11 @@ class Results:
         self.residuals[roi] = residuals_roi
         self.norms[roi] = norms_roi
 
-    def calculate(self, roi: np.ndarray = None, free_to_dilate=True) -> None:
+    def calculate(self, roi: np.ndarray = None) -> None:
         """Calculate the strains, rotations, and stresses from the homographies."""
         if roi is None:
             roi = np.s_[:]
-        for i in range(8):
-            print(i, self.homographies[..., i].min(), self.homographies[..., i].mean(), self.homographies[..., i].max())
         # self.homographies[np.abs(self.homographies) < 1e-5] = 0.0
-        if not free_to_dilate:
-            self.homographies[..., 0] = 0.0
-            self.homographies[..., 4] = 0.0
         F_roi = conversions.h2F(self.homographies[roi], self.PC_array[roi])
         F_roi = np.matmul(self.x2s, np.matmul(F_roi, self.x2s.T))
         F_roi = F_roi / F_roi[..., 2, 2][..., None, None]

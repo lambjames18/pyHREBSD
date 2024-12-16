@@ -329,8 +329,6 @@ class ICGNOptimizer:
             )[:, 0]
             # Update the parameters
             norm = dp_norm(dp, self.icgn_pre.xi)
-            print(norm)
-            exit()
             Wp = warp.W(p)
             Wdp = warp.W(dp)
             Wpdp = np.matmul(Wp, np.linalg.inv(Wdp))

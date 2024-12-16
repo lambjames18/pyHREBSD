@@ -3,9 +3,12 @@ import numpy as np
 from skimage import io
 from scipy import linalg, interpolate, signal
 import matplotlib.pyplot as plt
+
 # Local imports
 import warp
-from get_homography_cpu import dp_norm
+from get_homography_cpu import dp_norm, window_and_normalize, FMT
+import conversions
+from Data import process_pattern
 
 np.set_printoptions(
     linewidth=125,
@@ -14,10 +17,10 @@ np.set_printoptions(
     threshold=1000,
     formatter=None)
 
+init_type = "partial"  # Type of initial guess: "partial" or "full"
 max_iter = 50  # Maximum number of iterations
-conv_tol = 1e-3  # Convergence tolerance
+conv_tol = 5e-4  # Convergence tolerance
 subset_size = 300  # Size of the subset cropped out from the center of the images for the optimization
-p = np.zeros(8, dtype=float)  # Initial guess of the homography
 target_path = "/Users/jameslamb/Downloads/deformed.jpeg"
 reference_path = "/Users/jameslamb/Downloads/reference.jpeg"
 
@@ -29,6 +32,8 @@ reference_path = "/Users/jameslamb/Downloads/reference.jpeg"
 # Load the images
 T = io.imread(target_path).astype(float)
 R = io.imread(reference_path)
+T = process_pattern(T, 0.0, 101, 3.0)
+R = process_pattern(R, 0.0, 101, 0.0)
 print(f"Reference - Min: {R.min()}, Max: {R.max()}, Mean: {R.mean()}, Shape: {R.shape}")
 print(f"Target - Min: {T.min()}, Max: {T.max()}, Mean: {T.mean()}, Shape: {T.shape}")
 
@@ -70,19 +75,21 @@ print(f"R_zmsv: {r_zmsv}")
 # Create gradients
 GRx = R_spline(xi[0], xi[1], dx=0, dy=1, grid=False)
 GRy = R_spline(xi[0], xi[1], dx=1, dy=0, grid=False)
+# GRy, GRx = np.gradient(R[subset_slice], axis=(0, 1))
 print(f"Gradients (x) - Min: {GRx.min()}, Max: {GRx.max()}, Mean: {GRx.mean()}, Shape: {GRx.shape}")
 print(f"Gradients (y) - Min: {GRy.min()}, Max: {GRy.max()}, Mean: {GRy.mean()}, Shape: {GRy.shape}")
-GR = np.vstack((GRy, GRx)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
+GR = np.vstack((GRy, GRx)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN -> 1x2xN
 
 fig, ax = plt.subplots(1, 2, figsize=(8, 4))
 for a in ax.ravel():
     a.axis("off")
-ax[0].imshow(GRx.reshape(300, 300), cmap="Greys_r")
+ax[0].imshow(GRx.reshape(subset_size, subset_size), cmap="Greys_r")
 ax[0].set_title("Gradient (x)")
-ax[1].imshow(GRy.reshape(300, 300), cmap="Greys_r")
+ax[1].imshow(GRy.reshape(subset_size, subset_size), cmap="Greys_r")
 ax[1].set_title("Gradient (y)")
 plt.tight_layout()
 plt.savefig("gradients.jpg")
+plt.close()
 
 # Compute the jacobian of the shape function
 _1 = np.ones(xi.shape[1])
@@ -102,6 +109,72 @@ print(H)
 # Compute the Cholesky decomposition of the Hessian
 (c, L) = linalg.cho_factor(H)
 
+# Compute initial guess reference stuff
+guess_subset_slice = (slice(int(h0[1] - 128), int(h0[1] + 128)), slice(int(h0[0] - 128), int(h0[0] + 128)))
+# Get the FMT-FCC initial guess precomputed items
+r_init = window_and_normalize(R[guess_subset_slice])
+# Get the dimensions of the image
+height, width = r_init.shape
+# Create a mesh grid of log-polar coordinates
+theta = np.linspace(0, np.pi, int(height), endpoint=False)
+radius = np.linspace(0, height / 2, int(height + 1), endpoint=False)[1:]
+radius_grid, theta_grid = np.meshgrid(radius, theta, indexing="xy")
+radius_grid = radius_grid.flatten()
+theta_grid = theta_grid.flatten()
+# Convert log-polar coordinates to Cartesian coordinates
+x_fmt = 2 ** (np.log2(height) - 1) + radius_grid * np.cos(theta_grid)
+y_fmt = 2 ** (np.log2(height) - 1) - radius_grid * np.sin(theta_grid)
+# Create a mesh grid of Cartesian coordinates
+X_fmt = np.arange(width)
+Y_fmt = np.arange(height)
+# FFT the reference and get the signal
+r_fft = np.fft.fftshift(np.fft.fft2(r_init))
+r_fmt, _ = FMT(r_fft, X_fmt, Y_fmt, x_fmt, y_fmt)
+
+#####################################################
+# Initial guess
+#####################################################
+
+# Window and normalize the target
+t_init = window_and_normalize(T[guess_subset_slice])
+# Do the angle search first
+t_init_fft = np.fft.fftshift(np.fft.fft2(t_init))
+t_init_FMT, _ = FMT(t_init_fft, X_fmt, Y_fmt, x_fmt, y_fmt)
+cc = signal.fftconvolve(r_fmt, t_init_FMT[::-1], mode="same").real
+theta = (np.argmax(cc) - len(cc) / 2) * np.pi / len(cc)
+# Apply the rotation
+h = conversions.xyt2h_partial(np.array([[0, 0, -theta]]))[0]
+t_init_rot = warp.deform_image(t_init, h, h0)
+# Do the translation search
+cc = signal.fftconvolve(
+    r_init, t_init_rot[::-1, ::-1], mode="same"
+).real
+shift = np.unravel_index(np.argmax(cc), cc.shape) - np.array(cc.shape) / 2
+
+fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+for a in ax.ravel():
+    a.axis("off")
+ax[0].imshow(r_init, cmap="Greys_r", vmin=r_init.min(), vmax=r_init.max())
+ax[0].set_title("Reference")
+ax[1].imshow(t_init, cmap="Greys_r", vmin=r_init.min(), vmax=r_init.max())
+ax[1].set_title("Target")
+ax[2].imshow(cc, cmap="Greys_r")
+ax[2].set_title("Cross-correlation")
+ax[2].scatter(shift[1] + cc.shape[1] / 2, shift[0] + cc.shape[0] / 2, c="r", marker="+")
+ax[2].scatter(cc.shape[1] / 2, cc.shape[0] / 2, c="b", marker="x")
+plt.tight_layout()
+plt.show()
+# plt.savefig("initial_guess.jpg")
+# plt.close()
+
+# Store the homography
+measurement = np.array([[-shift[0], -shift[1], -theta]])
+# Convert the measurements to homographies
+if init_type == "full":
+    p = conversions.xyt2h(measurement, h0)
+else:
+    p = conversions.xyt2h_partial(measurement)
+
 #####################################################
 # IC-GN algorithm
 #####################################################
@@ -109,11 +182,14 @@ print(H)
 # Fit the spline to the unormalized deformed image
 T_spline = interpolate.RectBivariateSpline(y, x, T, kx=5, ky=5)
 
+p = np.array([0.0, 0.0, -2.0, 0.0, 0.0, 3.0, 0.0, 0.0])
+
 # Run the optimization
 num_iter = 0
 norms = []
 residuals = []
 print("Beginning optimization...")
+print(f"Initial guess: {p}")
 while num_iter < max_iter:
     print(f"Iteration {num_iter}")
 
@@ -183,8 +259,9 @@ ax[1, 0].imshow(r, cmap="Greys_r")
 ax[1, 0].set_title("Reference")
 ax[1, 1].imshow(t_deformed, cmap="Greys_r")
 ax[1, 1].set_title("Deformed warped")
-ax[1, 2].imshow(res, cmap="Greys_r", vmin=vmin, vmax=vmax)
+ax[1, 2].imshow(res, cmap="Greys_r")#, vmin=vmin, vmax=vmax)
 ax[1, 2].set_title("Residuals")
 
 plt.tight_layout()
 plt.savefig("results.jpg")
+plt.close()
