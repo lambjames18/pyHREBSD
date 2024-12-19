@@ -199,14 +199,17 @@ class ICGNOptimizer:
         x = torch.arange(R.shape[3]) - self.h0[0]
         y = torch.arange(R.shape[2]) - self.h0[1]
         X, Y = torch.meshgrid(x, y, indexing="xy")
-        xi = torch.stack([Y[self.subset_slice], X[self.subset_slice]], dim=-1).float().unsqueeze(0)  # 1xHxWx2
+        xi = torch.stack([X[self.subset_slice], Y[self.subset_slice]], dim=-1).float().unsqueeze(0)  # 1xHxWx2
+        # xi = torch.stack([Y[self.subset_slice], X[self.subset_slice]], dim=-1).float().unsqueeze(0)  # 1xHxWx2
 
         # Compute the intensity gradients of the subset and the subset intensities
         bound_fn = gpu_warp.make_bound([0, 0])
         spline_fn = gpu_warp.make_spline([5, 5])
-        GR = gpu_warp.grad(R, xi, bound_fn, spline_fn, extrapolate=1)  # 1xHxWx2
+        GR = gpu_warp.grad(R.T, xi, bound_fn, spline_fn, extrapolate=1)  # 1xHxWx2
+        # GR = gpu_warp.grad(R, xi, bound_fn, spline_fn, extrapolate=1)  # 1xHxWx2
         GR = torch.transpose(GR.reshape(1, -1, 2), 1, 2)  # 1x2xN
-        r = gpu_warp.pull(R, xi, bound_fn, spline_fn, extrapolate=1)
+        r = gpu_warp.pull(R.T, xi, bound_fn, spline_fn, extrapolate=1)
+        # r = gpu_warp.pull(R, xi, bound_fn, spline_fn, extrapolate=1)
         r_zmsv = torch.sqrt(((r - r.mean()) ** 2).sum())
         r = ((r - r.mean()) / r_zmsv).reshape(1, 1, *shape)
 
@@ -272,7 +275,8 @@ class ICGNOptimizer:
                 # Warp the target subset
                 num_iter += 1
                 xi_prime = warp.get_xi_prime_vectorized_gpu(xi[0], p)  # BxHxWx2
-                t_deformed = gpu_warp.pull(t, xi_prime, bound_fn, spline_fn, extrapolate=1)
+                t_deformed = gpu_warp.pull(t.T, xi_prime, bound_fn, spline_fn, extrapolate=1)
+                # t_deformed = gpu_warp.pull(t, xi_prime, bound_fn, spline_fn, extrapolate=1)
                 # Normalize the target
                 t_mean = t_deformed.mean(dim=(2, 3), keepdim=True)
                 t_deformed = (t_deformed - t_mean) / torch.sqrt(((t_deformed - t_mean) ** 2).sum(dim=(2, 3), keepdim=True))

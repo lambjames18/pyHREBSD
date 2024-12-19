@@ -186,13 +186,16 @@ class ICGNOptimizer:
         x = np.arange(self.R.shape[1]) - self.h0[0]
         y = np.arange(self.R.shape[0]) - self.h0[1]
         X, Y = np.meshgrid(x, y, indexing="xy")
-        xi = np.array([Y[self.subset_slice].flatten(), X[self.subset_slice].flatten()])
+        xi = np.array([X[self.subset_slice].flatten(), Y[self.subset_slice].flatten()])
+        # xi = np.array([Y[self.subset_slice].flatten(), X[self.subset_slice].flatten()])
 
         # Compute the intensity gradients of the subset
-        spline = interpolate.RectBivariateSpline(x, y, self.R, kx=5, ky=5)
-        GRx = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
-        GRy = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
-        GR = np.vstack((GRy, GRx)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
+        spline = interpolate.RectBivariateSpline(x, y, self.R.T, kx=5, ky=5)
+        # spline = interpolate.RectBivariateSpline(x, y, self.R, kx=5, ky=5)
+        GRx = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
+        GRy = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
+        GR = np.vstack((GRx, GRy)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
+        # GR = np.vstack((GRy, GRx)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
         r = spline(xi[0], xi[1], grid=False).flatten()
         r_zmsv = np.sqrt(((r - r.mean()) ** 2).sum())
         r = (r - r.mean()) / r_zmsv
@@ -263,7 +266,8 @@ class ICGNOptimizer:
         # Get the target image and process it
         T = self.pat_obj.read_pattern(idx, process=True, p_kwargs=self.image_processing_kwargs)
         T_spline = interpolate.RectBivariateSpline(
-            self.icgn_pre.x, self.icgn_pre.y, T, kx=5, ky=5
+            self.icgn_pre.x, self.icgn_pre.y, T.T, kx=5, ky=5
+        #     self.icgn_pre.x, self.icgn_pre.y, T, kx=5, ky=5
         )
         ### T_spline = warp.Spline(T, 5, 5, self.h0, self.subset_slice)
         # Run initial guess

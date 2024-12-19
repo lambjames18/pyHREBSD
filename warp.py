@@ -84,14 +84,13 @@ def deform_image(image: np.ndarray,
         np.ndarray: The deformed image. Same shape as the input (unless subset_slice is used)."""
     if PC is None:
         PC = np.array([image.shape[1] / 2, image.shape[0] / 2])
-    ii = np.arange(image.shape[0]) - PC[1]
-    jj = np.arange(image.shape[1]) - PC[0]
-    II, JJ = np.meshgrid(ii, jj, indexing="ij")
-    xi = np.array([II[subset_slice].flatten(), JJ[subset_slice].flatten()])
-    spline = interpolate.RectBivariateSpline(ii, jj, image, kx=kx, ky=ky)
-    xi_prime = get_xi_prime(xi, p)
-    tar_rot = spline(xi_prime[0], xi_prime[1], grid=False).reshape(image[subset_slice].shape)
-    return tar_rot
+    xx = np.arange(image.shape[1]) - PC[0]
+    yy = np.arange(image.shape[0]) - PC[1]
+    XX, YY = np.meshgrid(xx, yy, indexing='xy')
+    xi = np.array([XX[subset_slice].flatten(), YY[subset_slice].flatten()])
+    spline = interpolate.RectBivariateSpline(xx, yy, image.T, kx=kx, ky=ky)
+    image_rotated = deform(xi, spline, p).reshape(image[subset_slice].shape)
+    return image_rotated
 
 
 def get_xi_prime(xi, p) -> np.ndarray:

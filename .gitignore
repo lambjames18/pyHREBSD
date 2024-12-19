@@ -5,3 +5,5 @@
 *.npy
 *.gif
 *.pkl
+debug/*
+.DS_Store

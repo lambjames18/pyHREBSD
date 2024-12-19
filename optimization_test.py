@@ -19,12 +19,12 @@ np.set_printoptions(
 
 init_type = "partial"  # Type of initial guess: "partial" or "full"
 max_iter = 50  # Maximum number of iterations
-conv_tol = 5e-4  # Convergence tolerance
+conv_tol = 1e-3  # Convergence tolerance
 subset_size = 300  # Size of the subset cropped out from the center of the images for the optimization
 target_path = "/Users/jameslamb/Downloads/deformed.jpeg"
 reference_path = "/Users/jameslamb/Downloads/reference.jpeg"
 
-
+# ACTUAL HOMOGRAPHY: h = [0.01, 0.02, -2.0, -0.02, -0.01, 3.0, 0.0001, 0.0003]
 #####################################################
 # Pattern IO, setting up geometry, etc.
 #####################################################
@@ -56,14 +56,14 @@ x = np.arange(R.shape[1]) - h0[0]
 y = np.arange(R.shape[0]) - h0[1]
 print(f"X: {x.shape}, Y: {y.shape}")
 X, Y = np.meshgrid(x, y, indexing="xy")
-xi = np.array([Y[subset_slice].flatten(), X[subset_slice].flatten()])
+xi = np.array([X[subset_slice].flatten(), Y[subset_slice].flatten()])
 
 #####################################################
 # Reference precomputing
 #####################################################
 
 # Fit the spline to the unormalized reference image
-R_spline = interpolate.RectBivariateSpline(y, x, R, kx=5, ky=5)
+R_spline = interpolate.RectBivariateSpline(x, y, R.T, kx=5, ky=5)
 
 # Normalize the reference image
 r = R_spline(xi[0], xi[1], grid=False).flatten()
@@ -73,12 +73,12 @@ print(f"Reference normalized - Min: {r.min()}, Max: {r.max()}, Mean: {r.mean()},
 print(f"R_zmsv: {r_zmsv}")
 
 # Create gradients
-GRx = R_spline(xi[0], xi[1], dx=0, dy=1, grid=False)
-GRy = R_spline(xi[0], xi[1], dx=1, dy=0, grid=False)
+GRx = R_spline(xi[0], xi[1], dx=1, dy=0, grid=False)
+GRy = R_spline(xi[0], xi[1], dx=0, dy=1, grid=False)
 # GRy, GRx = np.gradient(R[subset_slice], axis=(0, 1))
 print(f"Gradients (x) - Min: {GRx.min()}, Max: {GRx.max()}, Mean: {GRx.mean()}, Shape: {GRx.shape}")
 print(f"Gradients (y) - Min: {GRy.min()}, Max: {GRy.max()}, Mean: {GRy.mean()}, Shape: {GRy.shape}")
-GR = np.vstack((GRy, GRx)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN -> 1x2xN
+GR = np.vstack((GRx, GRy)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN -> 1x2xN
 
 fig, ax = plt.subplots(1, 2, figsize=(8, 4))
 for a in ax.ravel():
@@ -88,7 +88,7 @@ ax[0].set_title("Gradient (x)")
 ax[1].imshow(GRy.reshape(subset_size, subset_size), cmap="Greys_r")
 ax[1].set_title("Gradient (y)")
 plt.tight_layout()
-plt.savefig("gradients.jpg")
+plt.savefig("debug/gradients.jpg")
 plt.close()
 
 # Compute the jacobian of the shape function
@@ -163,9 +163,9 @@ ax[2].set_title("Cross-correlation")
 ax[2].scatter(shift[1] + cc.shape[1] / 2, shift[0] + cc.shape[0] / 2, c="r", marker="+")
 ax[2].scatter(cc.shape[1] / 2, cc.shape[0] / 2, c="b", marker="x")
 plt.tight_layout()
-plt.show()
-# plt.savefig("initial_guess.jpg")
-# plt.close()
+# plt.show()
+plt.savefig("debug/initial_guess.jpg")
+plt.close()
 
 # Store the homography
 measurement = np.array([[-shift[0], -shift[1], -theta]])
@@ -180,9 +180,7 @@ else:
 #####################################################
 
 # Fit the spline to the unormalized deformed image
-T_spline = interpolate.RectBivariateSpline(y, x, T, kx=5, ky=5)
-
-p = np.array([0.0, 0.0, -2.0, 0.0, 0.0, 3.0, 0.0, 0.0])
+T_spline = interpolate.RectBivariateSpline(x, y, T.T, kx=5, ky=5)
 
 # Run the optimization
 num_iter = 0
@@ -263,5 +261,5 @@ ax[1, 2].imshow(res, cmap="Greys_r")#, vmin=vmin, vmax=vmax)
 ax[1, 2].set_title("Residuals")
 
 plt.tight_layout()
-plt.savefig("results.jpg")
+plt.savefig("debug/results.jpg")
 plt.close()
