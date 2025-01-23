@@ -13,6 +13,23 @@ class UP2:
         self.i = 0
         self.start_byte = np.int64(16)
         self.header()
+        self.set_processing()
+
+    def __len__(self):
+        return self.nPatterns
+
+    def __getitem__(self, i):
+        return self.read_pattern(i, process=True)
+
+    def __str__(self):
+        return f"UP2 file: {self.path}\n" \
+               f"Patterns: {self.nPatterns}\n" \
+               f"Pattern shape: {self.patshape}\n" \
+               f"File size: {self.filesize}\n" \
+               f"Bits per pixel: {self.bitsPerPixel}\n"
+
+    def __repr__(self):
+        return self.__str__()
 
     def header(self):
         chunk_size = 4
@@ -31,6 +48,24 @@ class UP2:
         self.patshape = (sz1, sz2)
         self.pattern_bytes = np.int64(self.patshape[0] * self.patshape[1] * 2)
 
+    def set_processing(
+        self,
+        low_pass_sigma: float = 0.0,
+        high_pass_sigma: float = 0.0,
+        truncate_std_scale: float = 0.0
+        ):
+        """Set the parameters for processing the patterns.
+        Values of 0.0 will skip the step.
+        
+        Args:
+            low_pass_sigma (float): The sigma for the low pass filter. Roughly 1% of the image size works well.
+            high_pass_sigma (float): The sigma for the high pass filter. Roughly 20% of the image size works well.
+            truncate_std_scale (float): The number of standard deviations to truncate. 3.0 is a good value.
+        """
+        self.low_pass_sigma = low_pass_sigma
+        self.high_pass_sigma = high_pass_sigma
+        self.truncate_std_scale = truncate_std_scale
+
     def read(self, chunks, i=None):
         """Read the next `chunks` bytes from the file. If `i` is not None, read from the current position."""
         if i is None:
@@ -41,13 +76,13 @@ class UP2:
         self.i += chunks
         return data
 
-    def read_pattern(self, i, process=False, p_kwargs={}):
+    def read_pattern(self, i, process=False):
         # Read in the patterns
         seek_pos = np.int64(self.start_byte + np.int64(i) * self.pattern_bytes)
         buffer = self.read(chunks=self.pattern_bytes, i=seek_pos)
         pat = np.frombuffer(buffer, dtype=np.uint16).reshape(self.patshape)
         if process:
-            pat = self.process_pattern(pat, **p_kwargs)
+            pat = self.process_pattern(pat)
         return pat
 
     def read_patterns(self, idx=-1, process=False, p_kwargs={}):
@@ -70,14 +105,11 @@ class UP2:
             pats[i] = self.read_pattern(idx[i], process, p_kwargs)
         return pats.reshape(in_shape)
 
-    def process_pattern(
-            self,
-            img: np.ndarray,
-            low_pass_sigma: float = 2.5,
-            high_pass_sigma: float = 101,
-            truncate_std_scale: float = 3.0
-        ) -> np.ndarray:
+    def process_pattern(self, img: np.ndarray,) -> np.ndarray:
         """Cleans patterns by equalizing the histogram and normalizing.
+        Applies a bandpass filter to the patterns and truncates the extreme values.
+        Images will be in the range [0, 1].
+        
         Args:
             img (np.ndarray): The patterns to clean. (H, W)
             low_pass_sigma (float): The sigma for the low pass filter.
@@ -85,69 +117,31 @@ class UP2:
             truncate_std_scale (float): The number of standard deviations to truncate.
         Returns:
             np.ndarray: The cleaned patterns. (N, H, W)"""
-        
-        # Process inputs
+
+        # Correct dtype
         img = img.astype(np.float32)
-        median = np.percentile(img, 50)
-        low_percentile = np.percentile(img, 0.1)
-        high_percentile = np.percentile(img, 99.9)
-        img[img < low_percentile] = median
-        img[img > high_percentile] = median
+
+        # Normalize
+        img = (img - img.min()) / (img.max() - img.min())
 
         # Low pass filter
-        img = (img - img.min()) / (img.max() - img.min())
-        img = ndimage.gaussian_filter(img, low_pass_sigma)
+        if self.low_pass_sigma > 0:
+            img = ndimage.gaussian_filter(img, self.low_pass_sigma)
 
         # High pass filter
-        background = ndimage.gaussian_filter(img, high_pass_sigma)
-        img = img - background
-        img = (img - img.min()) / (img.max() - img.min())
+        if self.high_pass_sigma > 0:
+            background = ndimage.gaussian_filter(img, self.high_pass_sigma)
+            img = img - background
 
         # Truncate step
-        mean, std = img.mean(), img.std()
-        img = np.clip(img, mean - truncate_std_scale * std, mean + truncate_std_scale * std)
+        if self.truncate_std_scale > 0:
+            mean, std = img.mean(), img.std()
+            img = np.clip(img, mean - self.truncate_std_scale * std, mean + self.truncate_std_scale * std)
+
+        # Re normalize
+        img = (img - img.min()) / (img.max() - img.min())
 
         return img
-
-
-def process_pattern(
-        img: np.ndarray,
-        low_pass_sigma: float = 2.5,
-        high_pass_sigma: float = 101,
-        truncate_std_scale: float = 3.0
-    ) -> np.ndarray:
-    """Cleans patterns by equalizing the histogram and normalizing.
-    Args:
-        img (np.ndarray): The patterns to clean. (H, W)
-        low_pass_sigma (float): The sigma for the low pass filter.
-        high_pass_sigma (float): The sigma for the high pass filter.
-        truncate_std_scale (float): The number of standard deviations to truncate.
-    Returns:
-        np.ndarray: The cleaned patterns. (N, H, W)"""
-    
-    # Process inputs
-    img = img.astype(np.float32)
-    # median = np.percentile(img, 50)
-    # low_percentile = np.percentile(img, 0.1)
-    # high_percentile = np.percentile(img, 99.9)
-    # img[img < low_percentile] = median
-    # img[img > high_percentile] = median
-
-    # Low pass filter
-    img = (img - img.min()) / (img.max() - img.min())
-    img = ndimage.gaussian_filter(img, low_pass_sigma)
-
-    # High pass filter
-    background = ndimage.gaussian_filter(img, high_pass_sigma)
-    img = img - background
-    img = (img - img.min()) / (img.max() - img.min())
-
-    # Truncate step
-    if truncate_std_scale > 0:
-        mean, std = img.mean(), img.std()
-        img = np.clip(img, mean - truncate_std_scale * std, mean + truncate_std_scale * std)
-
-    return img
 
 
 if __name__ == "__main__":
