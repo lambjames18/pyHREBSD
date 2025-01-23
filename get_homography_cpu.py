@@ -19,13 +19,6 @@ import conversions
 import Data
 
 
-# Make a Enum class for the different types of homography initialization
-class InitType(Enum):
-    NONE: str = "none"
-    FULL: str = "full"
-    PARTIAL: str = "partial"
-
-
 # Type hints
 PATS = Union[Data.UP2, np.ndarray]
 ARRAY = Union[np.ndarray, list, tuple]
@@ -426,6 +419,15 @@ class ICGNOptimizer:
             obj = dill.load(f)
         self.__dict__.update(obj.__dict__)
 
+
+# Make a Enum class for the different types of homography initialization
+class InitType(Enum):
+    NONE: str = "none"
+    FULL: str = "full"
+    PARTIAL: str = "partial"
+
+
+# Context manager to patch joblib to report into tqdm progress bar given as argument
 @contextlib.contextmanager
 def tqdm_joblib(tqdm_object):
     """Context manager to patch joblib to report into tqdm progress bar given as argument"""
