@@ -1,17 +1,9 @@
 import os
 import struct
-from collections import namedtuple
-import re
 
-from skimage import io, exposure
+from skimage import io
 from scipy import ndimage
-from tqdm import tqdm
 import numpy as np
-
-import rotations
-
-
-NUMERIC = r"[-+]?\d*\.\d+|\d+"
 
 
 class UP2:

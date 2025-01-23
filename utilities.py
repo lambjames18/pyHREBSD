@@ -727,7 +727,7 @@ def view_tensor_images(
             cbar.formatter.set_powerlimits((-1, 1))
     if save_dir is not None:
         plt.savefig(
-            os.path.join(save_dir, f"{save_name}{tensor_type}.png"),
+            os.path.join(save_dir, f"{save_name}_{tensor_type}.png"),
             dpi=300,
             transparent=True,
         )

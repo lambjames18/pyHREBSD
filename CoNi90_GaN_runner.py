@@ -14,7 +14,7 @@ if __name__ == "__main__":
     ang = "E:/GaN/GaN_20240425_27146_scan19.ang"
     name = "GaN_20240425_27146_scan19"
     # Set the geometry parameters
-    pixel_size = 13.0
+    pixel_size = 26.0
     sample_tilt = 70.0  # The sample tilt in degrees
     detector_tilt = 10.1  # The detector tilt in degrees
     step_size = 0.02
@@ -37,16 +37,16 @@ if __name__ == "__main__":
     C = utilities.get_stiffness_tensor(365.0, 135.0, 114.0, 381.0, 109.0, structure="hexagonal")
     traction_free = True
     # Calculate or read
-    calc = True
+    calc = False
     # Whether to view the reference image
     view_reference = False
     # Number of cores, max iterations, and convergence tolerance if calculating
     n_cores = 20
-    max_iter = 100
+    max_iter = 50
     conv_tol = 1e-3
     # Verbose
     verbose = False
-    gpu = True
+    gpu = False
     batch_size = 32
     ############################
     
@@ -140,10 +140,14 @@ if __name__ == "__main__":
 
     m = results.num_iter > 0
     # Generate maps
-    utilities.view_tensor_images(results.F[m].reshape(span + (3, 3)), "jet", "deformation", (x0[0] - start[0], x0[1] - start[1]), "results", name)
-    utilities.view_tensor_images(results.strains[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
-    utilities.view_tensor_images(results.rotations[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
-    utilities.view_tensor_images(results.homographies[m].reshape(span + (8,)), "jet", "homography", (x0[0] - start[0], x0[1] - start[1]), "results", name)
+    if span is None:
+        span = ang_data.shape
+    xy = (x0[0] - start[0], x0[1] - start[1])
+    save_dir = "results"
+    utilities.view_tensor_images(results.F[m].reshape(span + (3, 3)),          "jet", "deformation", xy, save_dir, name, "all",   "local")
+    utilities.view_tensor_images(results.strains[m].reshape(span + (3, 3)),    "jet", "strain",      xy, save_dir, name, "upper", "local")
+    utilities.view_tensor_images(results.rotations[m].reshape(span + (3, 3)),  "jet", "rotation",      xy, save_dir, name, "upper", "local")
+    utilities.view_tensor_images(results.homographies[m].reshape(span + (8,)), "jet", "homography",  xy, save_dir, name, "all",   "local")
     plt.close("all")
 
     # Save the ICGN optimization results (for logging/debugging purposes)
@@ -170,9 +174,9 @@ if __name__ == "__main__":
     # Save an alternate version of the rotation map
     u = np.array(
         [
-            r.w[..., 2, 1] - r.w[..., 1, 2],
-            r.w[..., 0, 2] - r.w[..., 2, 0],
-            r.w[..., 1, 0] - r.w[..., 0, 1],
+            results.rotations[..., 2, 1] - results.rotations[..., 1, 2],
+            results.rotations[..., 0, 2] - results.rotations[..., 2, 0],
+            results.rotations[..., 1, 0] - results.rotations[..., 0, 1],
         ]
     )
     mask = u[2] < 0
@@ -184,5 +188,5 @@ if __name__ == "__main__":
     l = ax.get_position()
     cax = fig.add_axes([l.x1 + 0.01, l.y0, 0.02, l.height])
     plt.colorbar(im, cax=cax)
-    plt.savefig(f"results/{name}_rotation.png")
+    plt.savefig(f"results/{name}_rotation2.png")
     plt.close(fig)
