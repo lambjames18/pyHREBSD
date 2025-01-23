@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import utilities
-import get_homography
+import get_homography_cpu
 
 if __name__ == "__main__":
     ############################
@@ -44,7 +44,7 @@ if __name__ == "__main__":
     pat_obj, ang_data = utilities.get_scan_data(up2, ang)
 
     # Create the optimizer
-    optimizer = get_homography.ICGNOptimizer(
+    optimizer = get_homography_cpu.ICGNOptimizer(
         pat_obj=pat_obj,
         x0=x0,
         PC=ang_data.pc,

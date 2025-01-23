@@ -20,27 +20,6 @@ NUMBER = int | float
 NUM_PHYSICAL_CORES = int(mpire.cpu_count() // 2)
 
 # Create some namedtuples
-ReferencePrecompute = namedtuple(
-    "ReferencePrecompute",
-    [
-        "r",
-        "r_zmsv",
-        "NablaR_dot_Jac",
-        "c",
-        "L",
-        "xi",
-        "x",
-        "y",
-        "r_init",
-        "r_fft",
-        "r_fmt",
-        "x_fmt",
-        "y_fmt",
-        "X_fmt",
-        "Y_fmt",
-    ],
-)
-
 ICGN_Pre = namedtuple("ICGN_Pre", ["r", "r_zmsv", "NablaR_dot_Jac", "c", "L", "xi", "x", "y"])
 FMTCC_Pre = namedtuple("FMTCC_Pre", ["r_init", "r_fft", "r_fmt", "x_fmt", "y_fmt", "X_fmt", "Y_fmt"])
 
@@ -89,7 +68,7 @@ class ICGNOptimizer:
         self.extra_verbose = False
 
         # Run the initialization functions
-        self.results = Results(
+        self.results = utilities.Results(
             scan_shape, PC, x0,
             step_size / pixel_size,
             fixed_projection,
@@ -177,11 +156,15 @@ class ICGNOptimizer:
         )
 
     def view_reference(self) -> None:
-        R = utilities.get_pattern(self.pat_obj, self.x0)
-        R = utilities.process_pattern(R, **self.image_processing_kwargs)
-        fig, ax = plt.subplots(1, 1, figsize=(5, 5))
-        ax.imshow(R, cmap="gray")
-        ax.axis("off")
+        R0 = self.pat_obj.read_pattern(self.x0, process=False)
+        R1 = self.pat_obj.read_pattern(self.x0, process=True, p_kwargs=self.image_processing_kwargs)
+        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+        ax[0].imshow(R0, cmap="gray")
+        ax[0].set_title("Raw Reference")
+        ax[0].axis("off")
+        ax[1].imshow(R1, cmap="gray")
+        ax[1].set_title("Processed Reference")
+        ax[1].axis("off")
         plt.show()
 
     def rc2idx(self, row: NUMBER, col: NUMBER) -> NUMBER:
@@ -197,38 +180,42 @@ class ICGNOptimizer:
     def reference_precompute(self) -> None:
         """Precompute arrays/values for the reference subset for the IC-GN algorithm."""
         # Get the reference image and process it
-        # self.R = utilities.get_pattern(self.pat_obj, self.x0)
-        # self.R = utilities.process_pattern(self.R, **self.image_processing_kwargs)
         self.R = self.pat_obj.read_pattern(self.x0, process=True, p_kwargs=self.image_processing_kwargs)
-        # Get the IC-GN sub-pixel alignment precomuted items
+
         # Get coordinates
         x = np.arange(self.R.shape[1]) - self.h0[0]
         y = np.arange(self.R.shape[0]) - self.h0[1]
-        X, Y = np.meshgrid(x, y)
+        X, Y = np.meshgrid(x, y, indexing="xy")
         xi = np.array([Y[self.subset_slice].flatten(), X[self.subset_slice].flatten()])
+
         # Compute the intensity gradients of the subset
-        # spline = warp.Spline(self.R, 5, 5, self.h0, self.subset_slice)
-        # GR = spline.gradient()
-        # r = spline(xi[0], xi[1], grid=False, normalize=False).flatten()
         spline = interpolate.RectBivariateSpline(x, y, self.R, kx=5, ky=5)
-        GRx = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
-        GRy = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
-        GR = np.vstack((GRx, GRy)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
+        GRx = spline(xi[0], xi[1], dx=0, dy=1, grid=False)
+        GRy = spline(xi[0], xi[1], dx=1, dy=0, grid=False)
+        GR = np.vstack((GRy, GRx)).reshape(2, 1, -1).transpose(1, 0, 2)  # 2x1xN
         r = spline(xi[0], xi[1], grid=False).flatten()
         r_zmsv = np.sqrt(((r - r.mean()) ** 2).sum())
         r = (r - r.mean()) / r_zmsv
+
         # Compute the jacobian of the shape function
         _1 = np.ones(xi.shape[1])
         _0 = np.zeros(xi.shape[1])
         out0 = np.array([[xi[0], xi[1], _1, _0, _0, _0, -xi[0] ** 2, -xi[1] * xi[0]]])
         out1 = np.array([[_0, _0, _0, xi[0], xi[1], _1, -xi[0] * xi[1], -xi[1] ** 2]])
         Jac = np.vstack((out0, out1))  # 2x8xN
+
         # Multiply the gradients by the jacobian
-        NablaR_dot_Jac = np.einsum("ilk,ljk->ijk", GR, Jac)[0]  # 1x8xN
-        # Compute the Hessian
+        NablaR_dot_Jac = np.einsum("ilk,ljk->ijk", GR, Jac)[0]  # 1x8xN -> 8xN
         H = 2 / r_zmsv**2 * NablaR_dot_Jac.dot(NablaR_dot_Jac.T)
+
+        # Compute the Cholesky decomposition
         (c, L) = linalg.cho_factor(H)
+
+        # Store the precomputed values
+        del GR, GRx, GRy, Jac, H, X, Y, spline
         self.icgn_pre = ICGN_Pre(r, r_zmsv, NablaR_dot_Jac, c, L, xi, x, y)
+
+        # Precompute the FMT-FCC initial guess
         if self.init_type is not None and self.init_type != "none":
             # Get the FMT-FCC initial guess precomputed items
             r_init = window_and_normalize(self.R[self.guess_subset_slice])
@@ -264,7 +251,7 @@ class ICGNOptimizer:
         # Run the optimization
         print("Running the homography optimization...")
         if n_cores > 1:
-            with mpire.WorkerPool(n_jobs=n_cores, use_dill=True) as pool:
+            with mpire.WorkerPool(n_jobs=n_cores, use_dill=True, start_method="spawn") as pool:
                 out = pool.map(self.run_single, [i for i in indices], progress_bar=True, iterable_len=self.num_points)
         else:
             out = [self.run_single(idx) for idx in tqdm(indices)]
@@ -274,12 +261,9 @@ class ICGNOptimizer:
     def run_single(self, idx: int) -> np.ndarray:
         """Run the homography optimization for a single point."""
         # Get the target image and process it
-        # T = utilities.get_pattern(self.pat_obj, idx)
-        # T = utilities.process_pattern(T, **self.image_processing_kwargs)
         T = self.pat_obj.read_pattern(idx, process=True, p_kwargs=self.image_processing_kwargs)
         T_spline = interpolate.RectBivariateSpline(
             self.icgn_pre.x, self.icgn_pre.y, T, kx=5, ky=5
-            # self.precomputed.x, self.precomputed.y, normalize(T), kx=5, ky=5
         )
         ### T_spline = warp.Spline(T, 5, 5, self.h0, self.subset_slice)
         # Run initial guess
@@ -354,22 +338,22 @@ class ICGNOptimizer:
             # print(f"Pattern {idx}: Iteration {num_iter}, Norm: {norm:.4f}, Residual: {residuals[-1]:.4f}")
             if norm < self.conv_tol:
                 break
-        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
-        ax[0].imshow(self.icgn_pre.r.reshape(818, 818), cmap="gray")
-        ax[0].set_title("Reference")
-        ax[0].axis("off")
-        ax[1].imshow(t_deformed.reshape(818, 818), cmap="gray")
-        ax[1].set_title("Deformed Target")
-        ax[1].axis("off")
-        ax[2].imshow(np.abs(e).reshape(818, 818), cmap="gray")
-        ax[2].set_title("Residuals")
-        ax[2].axis("off")
-        plt.tight_layout()
-        plt.savefig(f"./gif/{idx}_CPU.png")
-        plt.close("all")
-        
         if self.verbose:
-        # if num_iter >= self.max_iter and self.verbose:
+            fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+            ax[0].imshow(self.icgn_pre.r.reshape(self.scan_shape), cmap="gray")
+            ax[0].set_title("Reference")
+            ax[0].axis("off")
+            ax[1].imshow(t_deformed.reshape(self.scan_shape), cmap="gray")
+            ax[1].set_title("Deformed Target")
+            ax[1].axis("off")
+            ax[2].imshow(np.abs(e).reshape(self.scan_shape), cmap="gray")
+            ax[2].set_title("Residuals")
+            ax[2].axis("off")
+            plt.tight_layout()
+            plt.savefig(f"./gif/{idx}_CPU.png")
+            plt.close("all")
+        
+        if num_iter >= self.max_iter and self.verbose:
             # print(f"Warning: Maximum number of iterations reached for pattern {idx}!")
             row = int(self.icgn_pre.xi[0].max() - self.icgn_pre.xi[0].min() + 1)
             col = int(self.icgn_pre.xi[1].max() - self.icgn_pre.xi[1].min() + 1)
@@ -530,93 +514,3 @@ def FMT(image, X, Y, x, y):
     image_polar = np.abs(spline(x, y, grid=False).reshape(image.shape))
     sig = window_and_normalize(image_polar.mean(axis=1))
     return sig, image_polar
-
-
-class Results:
-    def __init__(self,
-                 shape: tuple = None,
-                 PC: ARRAY = None,
-                 x0: ARRAY = None,
-                 rel_step_size: NUMBER = None,
-                 fixed_projection: bool = False,
-                 detector_tilt: NUMBER = 10.0,
-                 sample_tilt: NUMBER = 70.0,
-                 traction_free: bool = True,
-                 small_strain: bool = True,
-                 C: ARRAY = None,
-                 ):
-        # Create scan details
-        self.shape = shape
-        self.yi, self.xi = np.indices(self.shape).astype(float)
-
-        # Create xtal 2 sample transformation matrix
-        x2s = np.array([180.0, 90 + sample_tilt - detector_tilt, 90.0], dtype=float)
-        self.x2s = rotations.eu2om(np.deg2rad(x2s)).T
-
-        # Create projection geometry
-        if fixed_projection:
-            self.PC_array = np.ones(shape + (3,), dtype=float) * PC
-        elif rel_step_size is None or x0 is None:
-            raise ValueError("The relative step size and the reference pattern location must be provided if the projection is not fixed.")
-        else:
-            theta = np.radians(90 - sample_tilt)
-            phi = np.radians(detector_tilt)
-            self.PC_array = np.array([
-                PC[0] - (x0[1] - self.xi) * rel_step_size,
-                PC[1] - (x0[0] - self.yi) * rel_step_size * np.cos(theta) / np.cos(phi),
-                PC[2] - (x0[0] - self.yi) * rel_step_size * np.sin(theta + phi)
-            ]).transpose(1, 2, 0)
-
-        # Create calculation parameters
-        if traction_free and C is None:
-            raise ValueError("The stiffness tensor must be provided if the calculation is traction free.")
-        self.traction_free = traction_free
-        self.C = C
-        self.small_strain = small_strain
-
-        # Create empty arrays for the results
-        self.num_iter = np.zeros(shape, dtype=int)
-        self.residuals = np.zeros(shape, dtype=float)
-        self.norms = np.zeros(shape, dtype=float)
-        self.homographies = np.zeros(shape + (8,), dtype=float)
-        self.strains = np.zeros(shape + (3, 3), dtype=float)
-        self.rotations = np.zeros(shape + (3, 3), dtype=float)
-        self.stresses = np.zeros(shape + (3, 3), dtype=float)
-        self.F = np.zeros(shape + (3, 3), dtype=float)
-
-    def save(self, filename: str) -> None:
-        """Save the results to a file."""
-        with open(filename, "wb") as f:
-            dill.dump(self, f)
-
-    def load(self, filename: str) -> None:
-        """Load the results from a file."""
-        with open(filename, "rb") as f:
-            obj = dill.load(f)
-            self.__dict__.update(obj.__dict__)
-
-    def update(self, icgn_out: list, roi: np.ndarray) -> None:
-        """Update the results with the output of the homography optimization."""
-        # Get the results
-        p_roi = np.array([o[0] for o in icgn_out])
-        num_iter_roi = np.array([o[1] for o in icgn_out])
-        residuals_roi = np.array([o[2] for o in icgn_out])
-        norms_roi = np.array([o[3] for o in icgn_out])
-        # Store the results
-        self.homographies[roi] = p_roi
-        self.num_iter[roi] = num_iter_roi
-        self.residuals[roi] = residuals_roi
-        self.norms[roi] = norms_roi
-
-    def calculate(self, roi: np.ndarray = None) -> None:
-        """Calculate the strains, rotations, and stresses from the homographies."""
-        if roi is None:
-            roi = np.s_[:]
-        F_roi = conversions.h2F(self.homographies[roi], self.PC_array[roi])
-        F_roi = np.matmul(self.x2s, np.matmul(F_roi, self.x2s.T))
-        F_roi = F_roi / F_roi[..., 2, 2][..., None, None]
-        self.F[roi] = F_roi
-        calc_out = conversions.F2strain(self.F[roi], self.C, self.small_strain)
-        self.strains[roi], self.rotations[roi] = calc_out[:2]
-        if self.traction_free:
-            self.stresses[roi] = calc_out[2]

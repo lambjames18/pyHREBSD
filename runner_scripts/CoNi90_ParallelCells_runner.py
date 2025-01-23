@@ -2,35 +2,57 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import utilities
-import get_homography
+import get_homography_cpu
 
 if __name__ == "__main__":
+    ############################
     # Load the pattern object
-    ang = "F:/CoNi90/DED_CoNi90.ang"
-    up2 = "F:/CoNi90/DED_CoNi90.up2"
-    pat_obj, ang_data = utilities.get_scan_data(up2, ang)
+    up2 = "E:/cells/CoNi90-ParallelCells_2048x2048.up2"  # File doesnt exist at the moment
+    up2 = "F:/CoNi90-ParallelCells_2048x2048.up2"
+    ang = "E:/cells/CoNi90-ParallelCells.ang"
+    name = "CoNi90-OrthoCells"
     # Set the geometry parameters
     pixel_size = 13.0
-    sample_tilt = 68.0  # The sample tilt in degrees
-    detector_tilt = 10.3  # The detector tilt in degrees
-    subset_size = 1000
+    sample_tilt = 70.0  # The sample tilt in degrees
+    detector_tilt = 9.8  # The detector tilt in degrees
+    subset_size = 1600
     initial_guess_subset_size = 1024
     # Set the roi parameters
-    start = (460, 280)  # The pixel location to start the ROI
+    start = (0, 0)  # The pixel location to start the ROI
     span = (
-        100,
-        100,
+        200,
+        200,
     )  # The (row, column) span of the ROI from the start location (down, right)
-    x0 = (517, 321)  # The location of the reference within the ROI
+    x0 = (100, 100)  # The location of the reference within the ROI
     # Set the image processing parameters
-    sigma = 10
+    sigma = 20
     equalize = True
     truncate = True
     # Set the small strain flag
     small_strain = False
+    # Calculate or read
+    calc = True
+    # Number of cores, max iterations, and convergence tolerance if calculating
+    n_cores = 20
+    max_iter = 100
+    conv_tol = 1e-3
+    ############################
+    
+    # Load the pattern object
+    pat_obj, ang_data = utilities.get_scan_data(up2, ang)
+    pats = utilities.get_patterns(pat_obj, [0, 10000, 39999])
+    print(pats.min(axis=(1, 2)), pats.max(axis=(1, 2)))
+    fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+    ax[0].imshow(pats[0], cmap="gray")
+    ax[0].set_title("Pattern 0")
+    ax[1].imshow(pats[1], cmap="gray")
+    ax[1].set_title("Pattern 10000")
+    ax[2].imshow(pats[2], cmap="gray")
+    ax[2].set_title("Pattern 39999")
+    plt.show()
 
     # Create the optimizer
-    optimizer = get_homography.ICGNOptimizer(
+    optimizer = get_homography_cpu.ICGNOptimizer(
         pat_obj,
         x0,
         ang_data.pc,
@@ -51,21 +73,24 @@ if __name__ == "__main__":
     optimizer.set_initial_guess_params(
         subset_size=initial_guess_subset_size, init_type="full"
     )
-    # Run the optimizer
-    optimizer.run(n_cores=10, max_iter=100, conv_tol=1e-3, verbose=False)
-    optimizer.save_results("results/CoNi90_DED_ICGN.pkl")
-    # optimizer.load_results("results/CoNi90_DED_ICGN.pkl")
+    if calc:
+        # Run the optimizer
+        optimizer.run(n_cores=n_cores, max_iter=max_iter, conv_tol=conv_tol, verbose=False)
+        optimizer.save_results(f"results/{name}.pkl")
+    else:
+        optimizer.load_results("results/CoNi90_DED_ICGN.pkl")
     # Save the results
     r = optimizer.results
     m = optimizer.roi
-    np.save("results/CoNi90_DED_homographies.npy", r.homographies)
 
-    utilities.view_tensor_images(r.F[m].reshape(span + (3, 3)), "jet", "deformation", (x0[0] - start[0], x0[1] - start[1]), "results", "CoNi90_DED")
-    utilities.view_tensor_images(r.e[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", "CoNi90_DED", "upper")
-    utilities.view_tensor_images(r.w[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", "CoNi90_DED", "upper")
-    utilities.view_tensor_images(r.homographies[m].reshape(span + (8,)), "jet", "homography", (x0[0] - start[0], x0[1] - start[1]), "results", "CoNi90_DED")
+    # Generate maps
+    utilities.view_tensor_images(r.F[m].reshape(span + (3, 3)), "jet", "deformation", (x0[0] - start[0], x0[1] - start[1]), "results", name)
+    utilities.view_tensor_images(r.e[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
+    utilities.view_tensor_images(r.w[m].reshape(span + (3, 3)), "jet", "strain", (x0[0] - start[0], x0[1] - start[1]), "results", name, "upper")
+    utilities.view_tensor_images(r.homographies[m].reshape(span + (8,)), "jet", "homography", (x0[0] - start[0], x0[1] - start[1]), "results", name)
     plt.close("all")
 
+    # Save the ICGN optimization results (for logging/debugging purposes)
     fig, ax = plt.subplots(1, 3, figsize=(12, 4))
     im0 = ax[0].imshow(r.num_iter[m].reshape(span), cmap="viridis")
     ax[0].set_title("Iteration count")
@@ -83,9 +108,10 @@ if __name__ == "__main__":
     l = ax[2].get_position()
     cax = fig.add_axes([l.x1 + 0.01, l.y0, 0.02, l.height])
     plt.colorbar(im2, cax=cax)
-    plt.savefig("results/CoNi90_DED_ICGN.png")
+    plt.savefig(f"results/{name}_ICGN.png")
     plt.close(fig)
 
+    # Save an alternate version of the rotation map
     u = np.array(
         [
             r.w[..., 2, 1] - r.w[..., 1, 2],
@@ -102,5 +128,5 @@ if __name__ == "__main__":
     l = ax.get_position()
     cax = fig.add_axes([l.x1 + 0.01, l.y0, 0.02, l.height])
     plt.colorbar(im, cax=cax)
-    plt.savefig("results/CoNi90_DED_rotation.png")
+    plt.savefig(f"results/{name}_rotation.png")
     plt.close(fig)
