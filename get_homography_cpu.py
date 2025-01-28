@@ -607,6 +607,19 @@ def optimize(
                     r, r_zmsv, xi, NablaR_dot_Jac, cho_params, h0, max_iter, conv_tol
                 ) for idx in range(N)
             )
+    else:
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(_process_single_pattern)(
+                idx, get_pat, init_type, 
+                r_init if init_type is not InitType.NONE else None,
+                r_fmt if init_type is not InitType.NONE else None,
+                X_fmt if init_type is not InitType.NONE else None,
+                Y_fmt if init_type is not InitType.NONE else None,
+                x_fmt if init_type is not InitType.NONE else None,
+                y_fmt if init_type is not InitType.NONE else None,
+                r, r_zmsv, xi, NablaR_dot_Jac, cho_params, h0, max_iter, conv_tol
+            ) for idx in range(N)
+        )
 
     # Unpack results
     homographies = np.zeros((N, 8), dtype=float)
