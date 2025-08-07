@@ -29,7 +29,12 @@ class Spline:
 
     def __call__(self, x, y, dx=0, dy=0, grid=False, normalize=True):
         out = self.S(x, y, dx=dx, dy=dy, grid=grid)
-        mask = (x >= self.xrange[0]) & (x <= self.xrange[1]) & (y >= self.yrange[0]) & (y <= self.yrange[1])
+        mask = (
+            (x >= self.xrange[0])
+            & (x <= self.xrange[1])
+            & (y >= self.yrange[0])
+            & (y <= self.yrange[1])
+        )
         noise_range = np.percentile(out, (0.0, 1.0))
         out[~mask] = np.random.uniform(noise_range[0], noise_range[1], np.sum(~mask))
         if normalize:
@@ -38,7 +43,7 @@ class Spline:
 
     def __normalize(self, a):
         mean = a.mean()
-        return (a - mean) / np.sqrt(((a - mean)**2).sum())
+        return (a - mean) / np.sqrt(((a - mean) ** 2).sum())
 
     def warp(self, h, normalize=True):
         Wp = W(h)
@@ -47,13 +52,19 @@ class Spline:
         return self(xi_prime[0], xi_prime[1], normalize=normalize)
 
     def gradient(self):
-        dx = self(self.coords[0], self.coords[1], dx=1, dy=0, grid=False, normalize=False)
-        dy = self(self.coords[0], self.coords[1], dx=0, dy=1, grid=False, normalize=False)
+        dx = self(
+            self.coords[0], self.coords[1], dx=1, dy=0, grid=False, normalize=False
+        )
+        dy = self(
+            self.coords[0], self.coords[1], dx=0, dy=1, grid=False, normalize=False
+        )
         dxy = np.vstack((dx, dy)).reshape(2, 1, -1).transpose(1, 0, 2)  # 1x2xN
         return dxy
 
 
-def deform(xi: np.ndarray, spline: interpolate.RectBivariateSpline, p: np.ndarray) -> np.ndarray:
+def deform(
+    xi: np.ndarray, spline: interpolate.RectBivariateSpline, p: np.ndarray
+) -> np.ndarray:
     """Deform a subset using a homography.
     TODO: Need to make it so that out-of-bounds points are replaced with noise.
 
@@ -65,11 +76,14 @@ def deform(xi: np.ndarray, spline: interpolate.RectBivariateSpline, p: np.ndarra
     return spline(xi_prime[0], xi_prime[1], grid=False)
 
 
-def deform_image(image: np.ndarray,
-                 p: np.ndarray,
-                 PC: tuple | list | np.ndarray = None,
-                 subset_slice: tuple = (slice(None), slice(None)),
-                 kx: int = 2, ky: int = 2) -> np.ndarray:
+def deform_image(
+    image: np.ndarray,
+    p: np.ndarray,
+    PC: tuple | list | np.ndarray = None,
+    subset_slice: tuple = (slice(None), slice(None)),
+    kx: int = 2,
+    ky: int = 2,
+) -> np.ndarray:
     """Deform an image using a homography. Creates a bicubic spline of the image, deforms the coordinates of the pixels, and interpolates the deformed coordinates using the spline to get the deformed image.
 
     Args:
@@ -81,12 +95,13 @@ def deform_image(image: np.ndarray,
         ky (int): The degree of the spline in the y direction. Default is 2.
 
     Returns:
-        np.ndarray: The deformed image. Same shape as the input (unless subset_slice is used)."""
+        np.ndarray: The deformed image. Same shape as the input (unless subset_slice is used).
+    """
     if PC is None:
         PC = np.array([image.shape[1] / 2, image.shape[0] / 2])
     xx = np.arange(image.shape[1]) - PC[0]
     yy = np.arange(image.shape[0]) - PC[1]
-    XX, YY = np.meshgrid(xx, yy, indexing='xy')
+    XX, YY = np.meshgrid(xx, yy, indexing="xy")
     xi = np.array([XX[subset_slice].flatten(), YY[subset_slice].flatten()])
     spline = interpolate.RectBivariateSpline(xx, yy, image.T, kx=kx, ky=ky)
     image_rotated = deform(xi, spline, p).reshape(image[subset_slice].shape)
@@ -120,21 +135,147 @@ def W(p) -> np.ndarray:
         in_shape = p.shape[:-1]
         _0 = np.zeros(in_shape + (1,))
         if p.ndim == 2:
-            return np.squeeze(np.concatenate((p, _0), axis=-1).reshape(in_shape + (3, 3,)) + np.eye(3)[None, ...])
+            return np.squeeze(
+                np.concatenate((p, _0), axis=-1).reshape(
+                    in_shape
+                    + (
+                        3,
+                        3,
+                    )
+                )
+                + np.eye(3)[None, ...]
+            )
         elif p.ndim == 3:
-            return np.squeeze(np.concatenate((p, _0), axis=-1).reshape(in_shape + (3, 3,)) + np.eye(3)[None, None, ...])
+            return np.squeeze(
+                np.concatenate((p, _0), axis=-1).reshape(
+                    in_shape
+                    + (
+                        3,
+                        3,
+                    )
+                )
+                + np.eye(3)[None, None, ...]
+            )
         else:
             raise ValueError("p must be 1, 2, or 3 dimensions.")
 
 
+def homography_to_euclidean(H_input):
+    """
+    Decomposes one or more homography matrices into Euclidean (rigid) transforms.
+    A Euclidean transform preserves distances and angles (rotation + translation only).
+
+    Args:
+        H_input: Single 3x3 homography matrix or list/array of homography matrices
+
+    Returns:
+        Single 3x3 Euclidean transformation matrix or list of such matrices
+    """
+    # Handle the case of multiple homography matrices
+    if isinstance(H_input, list) or (
+        isinstance(H_input, np.ndarray) and H_input.ndim > 2
+    ):
+        return [homography_to_euclidean(H) for H in H_input]
+
+    # Process a single homography matrix
+    H = H_input.copy()
+
+    # Normalize the homography matrix
+    H = H / H[2, 2]
+
+    # Extract the 2x2 matrix from the upper-left corner
+    A = H[:2, :2]
+
+    # Use SVD to find the closest rotation matrix
+    U, _, Vt = np.linalg.svd(A)
+    R = U @ Vt
+
+    # Ensure it's a proper rotation matrix (det=1)
+    if np.linalg.det(R) < 0:
+        Vt[1, :] *= -1
+        R = U @ Vt
+
+    # Extract the translation vector
+    t = H[:2, 2]
+
+    # Create the Euclidean transformation matrix
+    E = np.eye(3)
+    E[:2, :2] = R
+    E[:2, 2] = t
+
+    return E
+
+
+def homography_to_similarity(H_input):
+    """
+    Decomposes one or more homography matrices into similarity transforms.
+    A similarity transform preserves angles but allows uniform scaling
+    (rotation + translation + uniform scaling).
+
+    Args:
+        H_input: Single 3x3 homography matrix or list/array of homography matrices
+
+    Returns:
+        Single 3x3 similarity transformation matrix or list of such matrices
+    """
+    # Handle the case of multiple homography matrices
+    if isinstance(H_input, list) or (
+        isinstance(H_input, np.ndarray) and H_input.ndim > 2
+    ):
+        return [homography_to_similarity(H) for H in H_input]
+
+    # Process a single homography matrix
+    H = H_input.copy()
+
+    # Normalize the homography matrix
+    H = H / H[2, 2]
+
+    # Extract the 2x2 matrix from the upper-left corner
+    A = H[:2, :2]
+
+    # Use SVD to decompose the matrix
+    U, s, Vt = np.linalg.svd(A)
+
+    # Calculate the average scaling factor
+    scale = np.mean(s)
+
+    # Find the rotation matrix
+    R = U @ Vt
+
+    # Ensure it's a proper rotation matrix (det=1)
+    if np.linalg.det(R) < 0:
+        Vt[1, :] *= -1
+        R = U @ Vt
+
+    # Extract the translation vector
+    t = H[:2, 2]
+
+    # Create the similarity transformation matrix
+    S = np.eye(3)
+    S[:2, :2] = scale * R  # Apply uniform scaling to rotation
+    S[:2, 2] = t
+
+    return S
+
+
 ### GPU functions
+
 
 def W_vectorized_gpu(p) -> torch.Tensor:
     """Convert homographies into a shape function.
     Assumes p is a (B, 8) array."""
     in_shape = p.shape[:-1]
     _0 = torch.zeros(in_shape + (1,))
-    return torch.cat((p, _0), dim=-1).reshape(in_shape + (3, 3,)) + torch.eye(3)[None, ...]
+    return (
+        torch.cat((p, _0), dim=-1).reshape(
+            in_shape
+            + (
+                3,
+                3,
+            )
+        )
+        + torch.eye(3)[None, ...]
+    )
 
 
 def get_xi_prime_vectorized_gpu(xi, p) -> np.ndarray:

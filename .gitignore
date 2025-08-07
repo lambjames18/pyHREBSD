@@ -7,3 +7,5 @@
 *.pkl
 debug/*
 .DS_Store
+4debsd_joint.py
+results/.DS_Store
