@@ -2,31 +2,34 @@ import numpy as np
 from collections import namedtuple
 import struct
 import os
+
 # from tqdm.auto import tqdm
 # import matplotlib.pyplot as plt
-
 
 
 ########## USER INPUTS ##########
 
 ### List of all the up2 filepaths that need to be processed
-paths = ["E:/SiGe/a-C03-scan/ScanA_2048x2048.up2", "E:/SiGe/b-C04-scan/ScanB_2048x2048.up2"]
+paths = [
+    "E:/SiGe/a-C03-scan/ScanA_2048x2048.up2",
+    "E:/SiGe/b-C04-scan/ScanB_2048x2048.up2",
+]
 
 ### List of the save paths for the processed up2 files
-save_paths = ["E:/SiGe/a-C03-scan/ScanA_1024x1024.up2", "E:/SiGe/b-C04-scan/ScanB_1024x1024.up2"]
+save_paths = [
+    "E:/SiGe/a-C03-scan/ScanA_1024x1024.up2",
+    "E:/SiGe/b-C04-scan/ScanB_1024x1024.up2",
+]
 
 ### Processing parameters
-bin_pats = True        # Whether to bin the patterns
-binning = 2            # Binning factor
+bin_pats = True  # Whether to bin the patterns
+binning = 2  # Binning factor
 binning_mode = "mean"  # Binning mode, "mean" or "sum"
 
-flip_pats = True       # Whether to flip the patterns
-flip = "lr"            # Flip mode, "lr", "ud", or "both"
+flip_pats = True  # Whether to flip the patterns
+flip = "lr"  # Flip mode, "lr", "ud", or "both"
 
 ######### END USER INPUTS #########
-
-
-
 
 
 def read_up2(up2: str) -> namedtuple:
@@ -46,18 +49,18 @@ def read_up2(up2: str) -> namedtuple:
     upFile = open(up2, "rb")
     chunk_size = 4
     tmp = upFile.read(chunk_size)
-    FirstEntryUpFile = struct.unpack('i', tmp)[0]
+    FirstEntryUpFile = struct.unpack("i", tmp)[0]
     tmp = upFile.read(chunk_size)
-    sz1 = struct.unpack('i', tmp)[0]
+    sz1 = struct.unpack("i", tmp)[0]
     tmp = upFile.read(chunk_size)
-    sz2 = struct.unpack('i', tmp)[0]
+    sz2 = struct.unpack("i", tmp)[0]
     tmp = upFile.read(chunk_size)
-    bitsPerPixel = struct.unpack('i', tmp)[0]
+    bitsPerPixel = struct.unpack("i", tmp)[0]
     # print("Header:", FirstEntryUpFile, sz1, sz2, bitsPerPixel)
     sizeBytes = os.path.getsize(up2) - 16
     sizeString = str(round(sizeBytes / 1e6, 1)) + " MB"
     bytesPerPixel = 2
-    nPatternsRecorded = int((sizeBytes/bytesPerPixel) / (sz1 * sz2))
+    nPatternsRecorded = int((sizeBytes / bytesPerPixel) / (sz1 * sz2))
     out = namedtuple("up2_file", ["patshape", "filesize", "nPatterns", "datafile"])
     out = out((sz1, sz2), sizeString, nPatternsRecorded, upFile)
     return out
@@ -65,7 +68,7 @@ def read_up2(up2: str) -> namedtuple:
 
 def get_patterns(pat_obj: namedtuple, idx: np.ndarray | list | tuple = None) -> tuple:
     """Read in patterns from a pattern file object.
-    
+
     Args:
         pat_obj (namedtuple): Pattern file object.
         idx (np.ndarray | list | tuple): Indices of patterns to read in. If None, reads in all patterns.
@@ -94,7 +97,10 @@ def get_patterns(pat_obj: namedtuple, idx: np.ndarray | list | tuple = None) -> 
         pat = np.int64(idx[i])
         seek_pos = start_byte + pat * pattern_bytes
         pat_obj.datafile.seek(seek_pos)
-        pats[i] = np.frombuffer(pat_obj.datafile.read(pat_obj.patshape[0] * pat_obj.patshape[1] * 2), dtype=np.uint16).reshape(pat_obj.patshape)
+        pats[i] = np.frombuffer(
+            pat_obj.datafile.read(pat_obj.patshape[0] * pat_obj.patshape[1] * 2),
+            dtype=np.uint16,
+        ).reshape(pat_obj.patshape)
 
     # Reshape the patterns
     if reshape:
@@ -109,14 +115,17 @@ def write_up2(pats_array: np.ndarray, filename: str, bit_depth: int = 16):
     Args:
         pats_array (np.ndarray): 3D array of patterns.
         filename (str): Path to save the up2 file.
-        bit_depth (int): Bit depth of the patterns. Default is 16. can be 8 (up1) or 16 (up2)."""
+        bit_depth (int): Bit depth of the patterns. Default is 16. can be 8 (up1) or 16 (up2).
+    """
     # Ensure pattern dimensions are correct
     if pats_array.ndim == 2:
         pats_array = pats_array[None, :, :]
     elif pats_array.ndim == 4:
         pats_array = pats_array.reshape(-1, pats_array.shape[-2], pats_array.shape[-1])
     elif pats_array.ndim != 3:
-        raise ValueError("pats_array must be 2D (single pattern), 3D (an number of patterns), or 4D (a grid of patterns).")
+        raise ValueError(
+            "pats_array must be 2D (single pattern), 3D (an number of patterns), or 4D (a grid of patterns)."
+        )
 
     # Normalize the patterns and convert to uint8 or uint16
     mns = pats_array.min(axis=(-2, -1))[:, None, None]
@@ -124,14 +133,20 @@ def write_up2(pats_array: np.ndarray, filename: str, bit_depth: int = 16):
     if bit_depth == 8:
         pats_array = np.around((pats_array - mns) / (mxs - mns) * 255).astype(np.uint8)
     elif bit_depth == 16:
-        pats_array = np.around((pats_array - mns) / (mxs - mns) * 65535).astype(np.uint16)
+        pats_array = np.around((pats_array - mns) / (mxs - mns) * 65535).astype(
+            np.uint16
+        )
     else:
         raise ValueError("bit_depth must be 8 or 16.")
 
     # Check the file extension
     if ".up2" not in filename and ".up1" not in filename:
         filename += ".up2" if bit_depth == 16 else ".up1"
-        print("Filename extension not recognized. Defaulting to", filename[-4:], "based on bit depth.")
+        print(
+            "Filename extension not recognized. Defaulting to",
+            filename[-4:],
+            "based on bit depth.",
+        )
     elif bit_depth == 16 and not filename.endswith(".up2"):
         filename = filename.replace(".up1", ".up2")
         print("Filename extension did not match bit depth. Changed to", filename[-4:])
@@ -146,10 +161,10 @@ def write_up2(pats_array: np.ndarray, filename: str, bit_depth: int = 16):
     upFile = open(filename, "wb")
 
     # Write the header
-    upFile.write(struct.pack('i', 1))
-    upFile.write(struct.pack('i', sz1))
-    upFile.write(struct.pack('i', sz2))
-    upFile.write(struct.pack('i', bit_depth))
+    upFile.write(struct.pack("i", 1))
+    upFile.write(struct.pack("i", sz1))
+    upFile.write(struct.pack("i", sz2))
+    upFile.write(struct.pack("i", bit_depth))
 
     # Write the patterns
     # for i in tqdm(range(pats_array.shape[0]), desc="Writing patterns"):
@@ -182,7 +197,9 @@ def bin_patterns(patterns: np.ndarray, binning: int, mode: str = "mean") -> np.n
     NL = N // binning
 
     # Reshape the patterns
-    p = patterns[:, :MK*binning, :NL*binning].reshape(patterns.shape[0], MK, binning, NL, binning)
+    p = patterns[:, : MK * binning, : NL * binning].reshape(
+        patterns.shape[0], MK, binning, NL, binning
+    )
 
     # Bin the patterns
     if mode == "mean":
