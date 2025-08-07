@@ -22,11 +22,13 @@ class UP2:
         return self.read_pattern(i, process=True)
 
     def __str__(self):
-        return f"UP2 file: {self.path}\n" \
-               f"Patterns: {self.nPatterns}\n" \
-               f"Pattern shape: {self.patshape}\n" \
-               f"File size: {self.filesize}\n" \
-               f"Bits per pixel: {self.bitsPerPixel}\n"
+        return (
+            f"UP2 file: {self.path}\n"
+            f"Patterns: {self.nPatterns}\n"
+            f"Pattern shape: {self.patshape}\n"
+            f"File size: {self.filesize}\n"
+            f"Bits per pixel: {self.bitsPerPixel}\n"
+        )
 
     def __repr__(self):
         return self.__str__()
@@ -52,11 +54,11 @@ class UP2:
         self,
         low_pass_sigma: float = 0.0,
         high_pass_sigma: float = 0.0,
-        truncate_std_scale: float = 0.0
-        ):
+        truncate_std_scale: float = 0.0,
+    ):
         """Set the parameters for processing the patterns.
         Values of 0.0 will skip the step.
-        
+
         Args:
             low_pass_sigma (float): The sigma for the low pass filter. Roughly 1% of the image size works well.
             high_pass_sigma (float): The sigma for the high pass filter. Roughly 20% of the image size works well.
@@ -85,7 +87,7 @@ class UP2:
             pat = self.process_pattern(pat)
         return pat
 
-    def read_patterns(self, idx=-1, process=False, p_kwargs={}):
+    def read_patterns(self, idx=-1, process=False):
         if type(idx) == int:
             if idx != -1:
                 return self.read_pattern(idx)
@@ -102,14 +104,17 @@ class UP2:
         else:
             pats = np.zeros(idx.shape + self.patshape, dtype=np.uint16)
         for i in range(idx.shape[0]):
-            pats[i] = self.read_pattern(idx[i], process, p_kwargs)
+            pats[i] = self.read_pattern(idx[i], process)
         return pats.reshape(in_shape)
 
-    def process_pattern(self, img: np.ndarray,) -> np.ndarray:
+    def process_pattern(
+        self,
+        img: np.ndarray,
+    ) -> np.ndarray:
         """Cleans patterns by equalizing the histogram and normalizing.
         Applies a bandpass filter to the patterns and truncates the extreme values.
         Images will be in the range [0, 1].
-        
+
         Args:
             img (np.ndarray): The patterns to clean. (H, W)
             low_pass_sigma (float): The sigma for the low pass filter.
@@ -136,7 +141,11 @@ class UP2:
         # Truncate step
         if self.truncate_std_scale > 0:
             mean, std = img.mean(), img.std()
-            img = np.clip(img, mean - self.truncate_std_scale * std, mean + self.truncate_std_scale * std)
+            img = np.clip(
+                img,
+                mean - self.truncate_std_scale * std,
+                mean + self.truncate_std_scale * std,
+            )
 
         # Re normalize
         img = (img - img.min()) / (img.max() - img.min())

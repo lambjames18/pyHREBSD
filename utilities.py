@@ -5,6 +5,7 @@ import os
 import re
 import struct
 import itertools
+import contextlib
 from collections import namedtuple
 
 import numpy as np
@@ -12,7 +13,8 @@ from scipy import signal, ndimage
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 from skimage import exposure, filters
-import dill
+import joblib
+from joblib import Parallel, delayed
 
 import torch
 import kornia
@@ -25,6 +27,24 @@ import conversions
 ARRAY = np.ndarray | list | tuple
 NUMBER = int | float
 NUMERIC = r"[-+]?\d*\.\d+|\d+"
+
+
+@contextlib.contextmanager
+def tqdm_joblib(tqdm_object):
+    """Context manager to patch joblib to report into tqdm progress bar given as argument"""
+
+    class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
+        def __call__(self, *args, **kwargs):
+            tqdm_object.update(n=self.batch_size)
+            return super().__call__(*args, **kwargs)
+
+    old_batch_callback = joblib.parallel.BatchCompletionCallBack
+    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
+    try:
+        yield tqdm_object
+    finally:
+        joblib.parallel.BatchCompletionCallBack = old_batch_callback
+        tqdm_object.close()
 
 
 def convert_pc(
@@ -83,7 +103,11 @@ def read_up2(up2: str) -> namedtuple:
     return out
 
 
-def read_ang(path: str, patshape: tuple | list | np.ndarray = None, segment_grain_threshold: float = None) -> namedtuple:
+def read_ang(
+    path: str,
+    patshape: tuple | list | np.ndarray = None,
+    segment_grain_threshold: float = None,
+) -> namedtuple:
     """Reads in the pattern center from an ang file.
     Only supports EDAX/TSL.
 
@@ -378,7 +402,10 @@ def process_patterns_gpu(
 
 
 def process_pattern(
-    img: np.ndarray, low_pass_sigma: float = 2.5, high_pass_sigma: float = 101, truncate_std_scale: float = 3.0
+    img: np.ndarray,
+    low_pass_sigma: float = 2.5,
+    high_pass_sigma: float = 101,
+    truncate_std_scale: float = 3.0,
 ) -> np.ndarray:
     """Cleans patterns by equalizing the histogram and normalizing.
 
@@ -716,8 +743,8 @@ def view_tensor_images(
                     ax[i, j].axis("off")
                     continue
             if clip == "local":
-                vmin = e[..., i, j].min()  #np.percentile(e[..., i, j], 0.1)
-                vmax = e[..., i, j].max()  #np.percentile(e[..., i, j], 99.9)
+                vmin = e[..., i, j].min()  # np.percentile(e[..., i, j], 0.1)
+                vmax = e[..., i, j].max()  # np.percentile(e[..., i, j], 99.9)
             if tensor_type == "homography":
                 _0 = ax[i, j].imshow(e[..., 3 * i + j], cmap=cmap, vmin=vmin, vmax=vmax)
             else:
@@ -827,20 +854,22 @@ def rotate_elastic_constants(C, A, tol=1e-6):
     A = np.asarray(A)
 
     # Is this a rotation matrix?
-    if np.sometrue(np.abs(np.dot(np.array(A), np.transpose(np.array(A))) -
-                          np.eye(3, dtype=float)) > tol):
-        raise RuntimeError('Matrix *A* does not describe a rotation.')
+    if np.sometrue(
+        np.abs(np.dot(np.array(A), np.transpose(np.array(A))) - np.eye(3, dtype=float))
+        > tol
+    ):
+        raise RuntimeError("Matrix *A* does not describe a rotation.")
 
     # Rotate
-    return full_3x3x3x3_to_Voigt_6x6(np.einsum('ia,jb,kc,ld,abcd->ijkl',
-                                               A, A, A, A,
-                                               Voigt_6x6_to_full_3x3x3x3(C)))
+    return full_3x3x3x3_to_Voigt_6x6(
+        np.einsum("ia,jb,kc,ld,abcd->ijkl", A, A, A, A, Voigt_6x6_to_full_3x3x3x3(C))
+    )
 
 
 def full_3x3_to_Voigt_6_index(i, j):
     if i == j:
         return i
-    return 6-i-j
+    return 6 - i - j
 
 
 def Voigt_6x6_to_full_3x3x3x3(C):
@@ -860,7 +889,7 @@ def Voigt_6x6_to_full_3x3x3x3(C):
     """
 
     C = np.asarray(C)
-    C_out = np.zeros((3,3,3,3), dtype=float)
+    C_out = np.zeros((3, 3, 3, 3), dtype=float)
     for i, j, k, l in itertools.product(range(3), range(3), range(3), range(3)):
         Voigt_i = full_3x3_to_Voigt_6_index(i, j)
         Voigt_j = full_3x3_to_Voigt_6_index(k, l)
@@ -875,12 +904,12 @@ def full_3x3x3x3_to_Voigt_6x6(C, tol=1e-3, check_symmetry=True):
     """
 
     C = np.asarray(C)
-    Voigt = np.zeros((6,6))
+    Voigt = np.zeros((6, 6))
     for i in range(6):
         for j in range(6):
             k, l = Voigt_notation[i]
             m, n = Voigt_notation[j]
-            Voigt[i,j] = C[k,l,m,n]
+            Voigt[i, j] = C[k, l, m, n]
             """
             print('---')
             print("k,l,m,n", C[k,l,m,n])
@@ -894,27 +923,41 @@ def full_3x3x3x3_to_Voigt_6x6(C, tol=1e-3, check_symmetry=True):
             print('---')
             """
             if check_symmetry:
-                assert abs(Voigt[i,j]-C[m,n,k,l]) < tol, \
-                    '1 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
-                    .format(i, j, Voigt[i,j], m, n, k, l, C[m,n,k,l])
-                assert abs(Voigt[i,j]-C[l,k,m,n]) < tol, \
-                    '2 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
-                    .format(i, j, Voigt[i,j], l, k, m, n, C[l,k,m,n])
-                assert abs(Voigt[i,j]-C[k,l,n,m]) < tol, \
-                    '3 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
-                    .format(i, j, Voigt[i,j], k, l, n, m, C[k,l,n,m])
-                assert abs(Voigt[i,j]-C[m,n,l,k]) < tol, \
-                    '4 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
-                    .format(i, j, Voigt[i,j], m, n, l, k, C[m,n,l,k])
-                assert abs(Voigt[i,j]-C[n,m,k,l]) < tol, \
-                    '5 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
-                    .format(i, j, Voigt[i,j], n, m, k, l, C[n,m,k,l])
-                assert abs(Voigt[i,j]-C[l,k,n,m]) < tol, \
-                    '6 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
-                    .format(i, j, Voigt[i,j], l, k, n, m, C[l,k,n,m])
-                assert abs(Voigt[i,j]-C[n,m,l,k]) < tol, \
-                    '7 Voigt[{},{}] = {}, C[{},{},{},{}] = {}' \
-                    .format(i, j, Voigt[i,j], n, m, l, k, C[n,m,l,k])
+                assert (
+                    abs(Voigt[i, j] - C[m, n, k, l]) < tol
+                ), "1 Voigt[{},{}] = {}, C[{},{},{},{}] = {}".format(
+                    i, j, Voigt[i, j], m, n, k, l, C[m, n, k, l]
+                )
+                assert (
+                    abs(Voigt[i, j] - C[l, k, m, n]) < tol
+                ), "2 Voigt[{},{}] = {}, C[{},{},{},{}] = {}".format(
+                    i, j, Voigt[i, j], l, k, m, n, C[l, k, m, n]
+                )
+                assert (
+                    abs(Voigt[i, j] - C[k, l, n, m]) < tol
+                ), "3 Voigt[{},{}] = {}, C[{},{},{},{}] = {}".format(
+                    i, j, Voigt[i, j], k, l, n, m, C[k, l, n, m]
+                )
+                assert (
+                    abs(Voigt[i, j] - C[m, n, l, k]) < tol
+                ), "4 Voigt[{},{}] = {}, C[{},{},{},{}] = {}".format(
+                    i, j, Voigt[i, j], m, n, l, k, C[m, n, l, k]
+                )
+                assert (
+                    abs(Voigt[i, j] - C[n, m, k, l]) < tol
+                ), "5 Voigt[{},{}] = {}, C[{},{},{},{}] = {}".format(
+                    i, j, Voigt[i, j], n, m, k, l, C[n, m, k, l]
+                )
+                assert (
+                    abs(Voigt[i, j] - C[l, k, n, m]) < tol
+                ), "6 Voigt[{},{}] = {}, C[{},{},{},{}] = {}".format(
+                    i, j, Voigt[i, j], l, k, n, m, C[l, k, n, m]
+                )
+                assert (
+                    abs(Voigt[i, j] - C[n, m, l, k]) < tol
+                ), "7 Voigt[{},{}] = {}, C[{},{},{},{}] = {}".format(
+                    i, j, Voigt[i, j], n, m, l, k, C[n, m, l, k]
+                )
 
     return Voigt
 
@@ -923,18 +966,19 @@ def full_3x3x3x3_to_Voigt_6x6(C, tol=1e-3, check_symmetry=True):
 
 
 class Results:
-    def __init__(self,
-                 shape: tuple = None,
-                 PC: ARRAY = None,
-                 x0: ARRAY = None,
-                 rel_step_size: NUMBER = None,
-                 fixed_projection: bool = False,
-                 detector_tilt: NUMBER = 10.0,
-                 sample_tilt: NUMBER = 70.0,
-                 traction_free: bool = True,
-                 small_strain: bool = True,
-                 C: ARRAY = None,
-                 ):
+    def __init__(
+        self,
+        shape: tuple = None,
+        PC: ARRAY = None,
+        x0: ARRAY = None,
+        rel_step_size: NUMBER = None,
+        fixed_projection: bool = False,
+        detector_tilt: NUMBER = 10.0,
+        sample_tilt: NUMBER = 70.0,
+        traction_free: bool = True,
+        small_strain: bool = True,
+        C: ARRAY = None,
+    ):
         # Create scan details
         self.shape = shape
         self.yi, self.xi = np.indices(self.shape).astype(float)
@@ -947,19 +991,26 @@ class Results:
         if fixed_projection:
             self.PC_array = np.ones(shape + (3,), dtype=float) * PC
         elif rel_step_size is None or x0 is None:
-            raise ValueError("The relative step size and the reference pattern location must be provided if the projection is not fixed.")
+            raise ValueError(
+                "The relative step size and the reference pattern location must be provided if the projection is not fixed."
+            )
         else:
             theta = np.radians(90 - sample_tilt)
             phi = np.radians(detector_tilt)
-            self.PC_array = np.array([
-                PC[0] - (x0[1] - self.xi) * rel_step_size,
-                PC[1] - (x0[0] - self.yi) * rel_step_size * np.cos(theta) / np.cos(phi),
-                PC[2] - (x0[0] - self.yi) * rel_step_size * np.sin(theta + phi)
-            ]).transpose(1, 2, 0)
+            self.PC_array = np.array(
+                [
+                    PC[0] - (x0[1] - self.xi) * rel_step_size,
+                    PC[1]
+                    - (x0[0] - self.yi) * rel_step_size * np.cos(theta) / np.cos(phi),
+                    PC[2] - (x0[0] - self.yi) * rel_step_size * np.sin(theta + phi),
+                ]
+            ).transpose(1, 2, 0)
 
         # Create calculation parameters
         if traction_free and C is None:
-            raise ValueError("The stiffness tensor must be provided if the calculation is traction free.")
+            raise ValueError(
+                "The stiffness tensor must be provided if the calculation is traction free."
+            )
         self.traction_free = traction_free
         self.C = C
         self.small_strain = small_strain
