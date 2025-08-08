@@ -3,18 +3,16 @@ HR-EBSD calculations implementing the inverse compositional Gauss-Newton optimiz
 
 ### Conda Env (windows, cuda version = 12.4)
 ```
-conda create -n hrebsd python=3.12
+conda create -n hrebsd python=3.12 -y
 conda activate hrebsd
-conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
-conda install  numpy matplotlib tqdm scipy scikit-image kornia -c conda-forge
-pip install mpire[dill]
+conda install pytorch torchvision pytorch-cuda=12.4 -c pytorch -c nvidia -y
+conda install numpy matplotlib tqdm scipy scikit-image joblib kornia -c conda-forge -y
 
 ```
 ### Conda Env (Mac or no CUDA)
 ```
 conda create -n hrebsd python=3.12 numpy matplotlib tqdm scipy scikit-image pytorch kornia -c pytorch -c conda-forge
 conda activate hrebsd
-pip install mpire[dill]
 ```
 ### File descripitions
 - `get_homography_cpu.py`: Contains the code for running the inverse compositional Gauss–Newton (IC-GN) algorithm for determining the homographies that warp target patterns to a reference pattern. Inside this file, the method `run_single` of the `ICGNOptimizer` class contains the actual algorithm useed to determine the homographies.
